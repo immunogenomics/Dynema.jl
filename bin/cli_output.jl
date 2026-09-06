@@ -7,8 +7,8 @@
 # instead of a flat stream of unlabeled println's, plus a `with_tee_log`
 # helper that duplicates everything printed during a run to a log file
 # (alongside the exact command invoked) while still showing it on the
-# console as normal. `include()`d by both dynema_map.jl and
-# dynema_extract_geno.jl, which call `section`/`bullet` themselves around
+# console as normal. `include()`d by dynema_map.jl, which calls
+# `section`/`bullet` itself around
 # the actual extraction/mapping work (done by Dynema library functions --
 # see src/vcf_genotypes.jl, src/matrix_market_expression.jl -- which know
 # nothing about this CLI-only formatting).

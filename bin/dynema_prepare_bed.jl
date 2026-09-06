@@ -19,9 +19,9 @@
 # the features file uniquely (dynema-map searches features gene names
 # first); the gene_id when the symbol is absent or ambiguous (duplicated in
 # the features file, or annotated at multiple loci in the GTF). Genes not
-# found in the features file at all are dropped (reported at the end) --
-# they could never be mapped anyway. Gene order follows the GTF, so chunks
-# are genomically contiguous.
+# found in the features file at all are silently dropped -- they could
+# never be mapped anyway. Gene order follows the GTF, so chunks are
+# genomically contiguous.
 #
 # Run with --help for the full list of options.
 #
@@ -133,6 +133,8 @@ function main()
 
     records = NamedTuple[]  # (chr, start, stop, name, id, strand)
     gtf_name_counts = Dict{String, Int}()  # duplicated symbols within the GTF itself
+    type_counts = Dict{String, Int}()      # all feature types seen (for diagnostics)
+    n_no_name = 0                          # matching records without a gene_name
 
     io = Dynema.open_maybe_gzip(args["gtf"])
     n_records = 0
@@ -141,12 +143,15 @@ function main()
             (isempty(line) || startswith(line, "#")) && continue
             f = split(line, '\t')
             length(f) >= 9 || continue
+            type_counts[f[3]] = get(type_counts, f[3], 0) + 1
             f[3] == args["feature-type"] || continue
             n_records += 1
             name = gtf_attr(f[9], "gene_name")
             id = gtf_attr(f[9], "gene_id")
+            name === nothing && (n_no_name += 1)
             (name === nothing && id === nothing) && continue
-            push!(records, (chr = String(f[1]), start = String(f[2]), stop = String(f[3]),
+            # GTF columns: 1 chr, 2 source, 3 feature, 4 start, 5 end, 7 strand
+            push!(records, (chr = String(f[1]), start = String(f[4]), stop = String(f[5]),
                             name = name === nothing ? nothing : Dynema.stripver(name),
                             id = id === nothing ? nothing : Dynema.stripver(id),
                             strand = String(f[7])))
@@ -155,7 +160,18 @@ function main()
     finally
         close(io)
     end
-    println("GTF: $n_records '$(args["feature-type"])' record(s)")
+
+    if n_records == 0
+        types = join(("'$t' ($n)" for (t, n) in sort(collect(type_counts); by = last, rev = true)), ", ")
+        error("The GTF has no '$(args["feature-type"])' records. Feature types found: " *
+              (isempty(types) ? "none -- is this a GTF file?" : types) * ". " *
+              "UCSC-style GTFs (e.g. hg38.knownGene.gtf) have no gene-level records and no " *
+              "gene names (their gene_id is a transcript id), so they cannot be matched to " *
+              "expression features -- use a GENCODE/Ensembl annotation " *
+              "(gencode.vXX.annotation.gtf.gz) or the Cell Ranger reference's genes.gtf instead.")
+    end
+    println("GTF: $n_records '$(args["feature-type"])' record(s)" *
+            (n_no_name > 0 ? " ($n_no_name without a gene_name attribute)" : ""))
 
     # ------------------------ Choose one identifier per gene -------------------- #
 
@@ -231,7 +247,6 @@ function main()
 
     println("Wrote $(length(rows)) gene(s) to $(length(files)) file(s): $(first(files))$(length(files) > 1 ? " ... $(last(files))" : "")")
     n_by_id > 0 && println("  $n_by_id gene(s) written by gene_id (symbol absent or ambiguous)")
-    n_not_in_features > 0 && println("  $n_not_in_features GTF gene(s) skipped: not present in --features")
     n_unresolvable > 0 && println("  $n_unresolvable gene(s) skipped: no unambiguous identifier")
 
 end

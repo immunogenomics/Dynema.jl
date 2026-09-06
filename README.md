@@ -13,22 +13,24 @@
 *Dynema*'s generalized framework enables testing complex regulatory effects including:
 
 - **Main effects**: A standard eQTL effect, independent of any context
-- **Interaction effects**: eQTL effects that dependent/vary depending on one (**single-context**) or more (**multi-context**) contexts
+- **Interaction effects**: eQTL effects that change depending on one (**single-context**) or multiple (**multi-context**) contexts
 - **Total effects**: Joint effect of main and interaction eQTL components. This effect captures any genetic signal driven by either main or interaction eQTL effects
 
 
-*Dynema* scales to genome-wide analysis, accounts for repeated measurements (multiple cells per donor), and provides calibrated p-values by using cluster-robust variance estimators (CRVEs). Additionally, it provides robust inferences in extreme scenarios including (1) small number of donors or (2) extreme imbalanced number cells per donor, by leveraging the score bootstrapping, implemented in [WildBootTests.jl](https://github.com/droodman/WildBootTests.jl).
+*Dynema* scales to genome-wide analysis, accounts for repeated measurements (multiple cells per donor), and provides calibrated *p*-values by using cluster-robust variance estimators (CRVEs). Additionally, it provides robust inferences in extreme scenarios such as small number of donors via optional adaptive score bootstrapping (built on [WildBootTests.jl](https://github.com/droodman/WildBootTests.jl)).
 
 
 # Installation
 
-*Dynema* can be installed in Julia as follows:
+*Dynema* requires Julia >= 1.9 (easily installed with [juliaup](https://github.com/julialang/juliaup)).
 
-```julia
-using Pkg
-Pkg.add(url = "https://github.com/joseah/Dynema.jl")
+**You don't need to write any Julia code to run *Dynema*!** The `bin/` folder ships a self-contained command-line interface (`dynema-map`) that installs *Dynema* and all dependencies for you.
+
+```bash
+curl -L https://github.com/joseah/Dynema.jl/archive/refs/heads/main.tar.gz | tar -xz
+mv Dynema.jl-main Dynema.jl
+cd Dynema.jl
+./bin/dynema-map --help
 ```
-
-**You don't need to write any Julia to run *Dynema*! You can use it in the command-line mode.**
 
 For more details and tutorials, see the [documentation website](https://joseah.github.io/Dynema.jl/dev/).

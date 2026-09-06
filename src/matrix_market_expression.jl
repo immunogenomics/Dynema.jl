@@ -534,6 +534,13 @@ function extract_gene_expression(; mtx::AbstractString, features::AbstractString
     dgx = dgx_sidecar_path(mtx)
     if isfile(dgx)
 
+        # A sidecar older than the matrix was built from previous data and
+        # would silently serve wrong counts -- refuse it.
+        mtime(dgx) >= mtime(mtx) ||
+            error("$dgx is older than $mtx -- the matrix changed after the sidecar " *
+                  "was built; rebuild it (dynema-prepare-expr) or delete it to fall " *
+                  "back to scanning the matrix directly")
+
         # Indexed sidecar present: two seeks + two small reads.
         printlnv("Loading gene '$gene' (row $target_row) from indexed sidecar $dgx..."; verbose)
         gcols, gvals = read_dgx_gene(dgx, target_row, n_genes, n_cells)

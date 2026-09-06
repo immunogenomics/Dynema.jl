@@ -63,14 +63,16 @@ get_summary(m::DynemaModel) = m.summary
 """
 `get_stat(::Dynema.DynemaModel)`
 
-Extract bootstrapepd statistic for a DynemaModel
+Extract the test statistic for every variant (the summary column named by
+[`get_stattype`](@ref): `z` for a single tested term, `χ²` for a joint test)
 """
-get_stat(m::DynemaModel) = m.summary.stat
+get_stat(m::DynemaModel) = m.summary[:, get_stattype(m)]
 
 """
 `get_p(::Dynema.DynemaModel)`
 
-Extract empirical p-values for a DynemaModel
+Extract the analytical CRVE p-values for a DynemaModel (bootstrap p-values,
+when computed, are the `p_boot`/`p_boot_approx` columns of `get_summary`)
 """
 get_p(m::DynemaModel) = m.summary.p
 

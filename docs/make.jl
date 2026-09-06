@@ -22,12 +22,10 @@ makedocs(
     pages = [
         "Home" => "index.md",
         "Tutorials" => [
-            "Installing Julia" => "tutorials/installing_julia.md",
-            "CLI: Command-line overview" => "tutorials/command_line.md",
-            "CLI: Main effect (context-independent)" => "tutorials/cli_main_effect.md",
-            "CLI: Interaction effect (context-dependent)" => "tutorials/cli_interaction_effect.md",
-            "CLI: Total effect (main + interaction)" => "tutorials/cli_total_effect.md",
-            "Extra: Reusing an extracted genotype matrix: `dynema-extract-geno`" => "tutorials/extract_geno.md",
+            "Quick start (end to end)" => "tutorials/quick_start.md",
+            "Command-line overview" => "tutorials/command_line.md",
+            "Extra: Compressing and indexing a VCF: `dynema-prepare-vcf`" => "tutorials/prepare_vcf.md",
+            "Extra: Building gene bed files from a GTF: `dynema-prepare-bed`" => "tutorials/prepare_bed.md",
         ],
         "API Reference" => "functions.md",
         "Internals" => "internals.md",
