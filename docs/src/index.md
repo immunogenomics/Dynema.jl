@@ -13,7 +13,7 @@ See our pre-print using this [link](https://www.biorxiv.org/content/10.64898/202
 ## Getting started
 
 - [Quick start (end to end)](tutorials/quick_start.md) from input files
-  (VCF + Matrix Market expression) through data indexing, ad single-cell  eQTL tests on a small simulated dataset.
+  (VCF + Matrix Market expression) through data indexing, and single-cell eQTL tests on a small simulated dataset.
 - [Command-line overview](tutorials/command_line.md) familiarizes with 
   running *Dynema* and its parameters from a VCF and a Matrix Market count 
   matrix, without writing any Julia code.
