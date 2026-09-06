@@ -11,7 +11,7 @@ makedocs(
                          # resolves the same way regardless of which page runs it
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", nothing) == "true",
-        canonical = "https://joseah.github.io/Dynema.jl",
+        canonical = "https://immunogenomics.github.io/Dynema.jl",
         edit_link = "main",
         assets = ["assets/favicon.ico"],
         sidebar_sitename = false,        # logo already includes the "Dynema" wordmark
@@ -34,7 +34,7 @@ makedocs(
 )
 
 deploydocs(
-    repo = "github.com/joseah/Dynema.jl.git",
+    repo = "github.com/immunogenomics/Dynema.jl.git",
     devbranch = "main",
     push_preview = true,
 )

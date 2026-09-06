@@ -23,5 +23,5 @@ See our pre-print using this [link](https://www.biorxiv.org/content/10.64898/202
 
 ## Getting help
 
-Please open an issue on [GitHub](https://github.com/joseah/Dynema.jl/issues)
+Please open an issue on [GitHub](https://github.com/immunogenomics/Dynema.jl/issues)
 for bug reports or feature requests.

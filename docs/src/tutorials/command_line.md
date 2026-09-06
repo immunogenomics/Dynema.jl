@@ -1,7 +1,7 @@
 # Command-line interface (CLI)
 
 **You don't need to write any Julia to run *Dynema*!**. The `bin/` folder of the
-[Dynema.jl repository](https://github.com/joseah/Dynema.jl) ships a
+[Dynema.jl repository](https://github.com/immunogenomics/Dynema.jl) ships a
 self-contained command-line tool:
 
 - **`dynema-map`**: This tool maps one or more genes (a batch, defined by
@@ -29,7 +29,7 @@ itself.
 
 
 ```bash
-curl -L https://github.com/joseah/Dynema.jl/archive/refs/heads/main.tar.gz | tar -xz
+curl -L https://github.com/immunogenomics/Dynema.jl/archive/refs/heads/main.tar.gz | tar -xz
 mv Dynema.jl-main Dynema.jl
 cd Dynema.jl
 ./bin/dynema-map --help

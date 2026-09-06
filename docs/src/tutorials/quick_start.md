@@ -28,18 +28,18 @@ names:
 - Download *Dynema*:
 
 ```bash
-curl -L https://github.com/joseah/Dynema.jl/archive/refs/heads/main.tar.gz | tar -xz
+curl -L https://github.com/immunogenomics/Dynema.jl/archive/refs/heads/main.tar.gz | tar -xz
 mv Dynema.jl-main Dynema
 cd Dynema
 ```
 
-- Download the demo dataset (~1 MB) from [Dynema_datasets](https://github.com/joseah/Dynema_datasets):
+- Download the demo dataset (~1 MB) from [Dynema_datasets](https://github.com/immunogenomics/Dynema_datasets):
 
 ```bash
 input=quick_start_data
 mkdir -p "$input"
 
-curl -L https://github.com/joseah/Dynema_datasets/archive/refs/heads/main.tar.gz | \
+curl -L https://github.com/immunogenomics/Dynema_datasets/archive/refs/heads/main.tar.gz | \
   tar -xz -C "$input" --strip-components=3 "Dynema_datasets-main/data/quick_start"
 ```
 

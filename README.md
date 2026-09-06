@@ -4,9 +4,9 @@
 
 # Dynema (Dynamic eQTL mapping for single cells)
 
-[![Build Status](https://github.com/joseah/Dynema.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/joseah/Dynema.jl/actions/workflows/CI.yml?query=branch%3Amain)
-[![Documentation](https://github.com/joseah/Dynema.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://joseah.github.io/Dynema.jl/dev/)
-[![Docs: stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://joseah.github.io/Dynema.jl/stable/)
+[![Build Status](https://github.com/immunogenomics/Dynema.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/immunogenomics/Dynema.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Documentation](https://github.com/immunogenomics/Dynema.jl/actions/workflows/documentation.yml/badge.svg?branch=main)](https://immunogenomics.github.io/Dynema.jl/dev/)
+[![Docs: stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://immunogenomics.github.io/Dynema.jl/stable/)
 
 *Dynema* is a method to map single-cell eQTL effects at real cellular resolution.
 
@@ -27,10 +27,10 @@
 **You don't need to write any Julia code to run *Dynema*!** The `bin/` folder ships a self-contained command-line interface (`dynema-map`) that installs *Dynema* and all dependencies for you.
 
 ```bash
-curl -L https://github.com/joseah/Dynema.jl/archive/refs/heads/main.tar.gz | tar -xz
+curl -L https://github.com/immunogenomics/Dynema.jl/archive/refs/heads/main.tar.gz | tar -xz
 mv Dynema.jl-main Dynema.jl
 cd Dynema.jl
 ./bin/dynema-map --help
 ```
 
-For more details and tutorials, see the [documentation website](https://joseah.github.io/Dynema.jl/dev/).
+For more details and tutorials, see the [documentation website](https://immunogenomics.github.io/Dynema.jl/dev/).
