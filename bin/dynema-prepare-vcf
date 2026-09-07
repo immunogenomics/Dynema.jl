@@ -6,4 +6,14 @@
 # Usage: ./bin/dynema-prepare-vcf [options]      (run --help for the full list)
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Portable precompilation caches across heterogeneous machines (HPC login vs
+# compute nodes with different CPUs): Julia >= 1.9 native-code caches are
+# keyed to the CPU, so without this each new CPU type silently re-precompiles
+# everything (minutes). On x86_64 we pin the same multi-target set Julia's
+# own binaries use, making one cache valid on every node. Users can override
+# by exporting JULIA_CPU_TARGET themselves; non-x86 machines are left native.
+if [ "$(uname -m)" = "x86_64" ]; then
+  export JULIA_CPU_TARGET="${JULIA_CPU_TARGET:-generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1)}"
+fi
 exec julia --project="$DIR" "$DIR/dynema_prepare_vcf.jl" "$@"

@@ -38,6 +38,17 @@ cd Dynema.jl
 If `julia` isn't on your `PATH`, invoke the underlying script directly
 instead: `julia --project=bin bin/dynema_map.jl [options]`.
 
+!!! note "HPC clusters: precompile once, run anywhere"
+    Julia's precompilation caches are normally tied to the exact CPU model,
+    so on clusters where login and compute nodes differ (or compute nodes
+    are heterogeneous), every new CPU type would silently re-precompile for
+    several minutes. The `bin/` launchers prevent this on x86_64 by pinning
+    a portable multi-target (`JULIA_CPU_TARGET`), so precompiling once --
+    on any node -- yields caches valid everywhere. Export your own
+    `JULIA_CPU_TARGET` before running to override. If you invoke the `.jl`
+    scripts directly (bypassing the launchers), set it yourself for the
+    same effect.
+
 ## What `dynema-map` needs
 
 `dynema-map` inputs:
