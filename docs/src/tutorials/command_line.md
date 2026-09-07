@@ -150,6 +150,16 @@ Arguments:
   test G × context interactions for; their main effects are added to the model
   automatically. Required when `--effect` includes interaction/total. Contexts
   you only want to adjust for (without an interaction) belong in `--covariates`.
+- `--per-context` (default true): with a multi-context interaction test, each
+  output row additionally carries one 1-df p-value per tested context
+  (`p_<context>` columns), computed from the same per-variant null fit and
+  cluster-robust covariance as the joint test -- so no extra model fitting and
+  no second run. They show which context(s) drive a joint signal. Statistical
+  note: they are exact under the joint null of no interactions, but when
+  contexts are correlated a true effect in one context can partially project
+  onto another's test -- the joint `p` remains the primary inference. Not
+  applicable to main/total effects or single-context interactions. Pass
+  `--per-context false` to omit the columns.
 - `--out`: output *prefix*. Each gene writes its own summary statistics
   table named `<out>_<gene>.tsv` (or `<out><gene>.tsv` if the prefix ends in
   `/`; directories are created as needed; with no `--out`, just

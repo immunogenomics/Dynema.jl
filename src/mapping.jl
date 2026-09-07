@@ -55,6 +55,12 @@ internal debugging
 - `pos`: A numeric value specifying a genomic location for each genetic variant. Stored in final output for convenience
 - `gene`: Name of the gene being tested. Stored in final output for convenience
 - `chr`: Chromosome position of gene being tested. Stored in final output for convenience.
+- `percontext`: For multi-context interaction tests (per-variant null with more than one tested term, one-way
+clustering), additionally report one 1-df p-value column per tested context (`p_<context>`), computed from the same
+restricted fit and CRVE covariance as the joint test (see [`crve_percomponent`](@ref)) -- no extra model fitting.
+They decompose the joint statistic; exact under the joint null, but with correlated contexts a true effect in one
+context can partially project onto another's test, so the joint p-value remains the primary inference. Ignored for
+main/total effect tests (shared null) and single-context interactions. Default `true`
 """
 function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMatrix, AbstractVector}, 
                     meta::AbstractDataFrame, groups::Union{AbstractDataFrame, AbstractVector}, termtest::Union{String, Vector{String}}, 
@@ -66,7 +72,8 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
                     ptype::Symbol = :equaltail, rboot = false,
                     pos::Union{Nothing, Vector{Int64}, Vector{Float64}} = nothing,
                     gene::Union{Nothing, String} = nothing,
-                    chr::Union{Nothing, String, Int} = nothing)
+                    chr::Union{Nothing, String, Int} = nothing,
+                    percontext::Bool = true)
 
     # ------------------------------- Betas mode -------------------------------- #
 
@@ -151,6 +158,19 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
     f0 = FormulaTerm(f.lhs, f.rhs[.!v0])
     null_is_shared = !(:G in StatsModels.termvars(f0.rhs))
     m0shared = null_is_shared ? glm(f0, design, Poisson(), LogLink()) : nothing
+
+    # Per-context 1-df p-value columns: only for multi-context interaction
+    # tests (per-variant null -- G stays in the restricted model -- with
+    # more than one tested term) under one-way clustering. Main and total
+    # effect tests use a shared null (every tested term involves G), so
+    # they are excluded automatically; the per-component decomposition of
+    # the 4-df total test is conceptually different and deliberately not
+    # offered. Column names derive from the tested `G & context` terms
+    # (`p_<context>`). See crve_percomponent for the statistical caveat.
+    pcnames = (percontext && !null_is_shared && length(termtest) > 1 &&
+               size(groups, 2) == 1) ?
+        ["p_" * replace(replace(t, r"^G\s*&\s*" => ""), r"[ &]+" => "_")
+         for t in termtest] : nothing
     # Only the fitted values and coefficients of the shared null are needed
     # downstream -- extracted here so the (large) fitted model object never
     # has to be serialized to parallel workers.
@@ -191,7 +211,8 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
         chunk_results = @showprogress pmap(CachingPool(workers()), chunks) do idxs
             map_chunk(idxs; f = f, design = design, μ̂0 = μ̂0, beta0 = beta0, v0 = v0,
                       groups = groups, geno = geno, R = R, r = r, boot = boot, B = B,
-                      ptype = ptype, rboot = rboot, betas = betamode == :all)
+                      ptype = ptype, rboot = rboot, betas = betamode == :all,
+                      pcnames = pcnames)
         end
         reduce(vcat, chunk_results)
 
@@ -200,7 +221,7 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
 
             safe_map_variant_shared(ws, geno[:, i]; groups = groups,
                     R = R, r = r, boot = boot, B = B, ptype = ptype, rboot = rboot,
-                    rng = StableRNG(1322), betas = betamode == :all)
+                    rng = StableRNG(1322), betas = betamode == :all, pcnames = pcnames)
         end
 
     else
@@ -208,7 +229,7 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
 
             safe_map_variant(geno[:, i]; f = f,  d = design, groups = groups, R = R, r = r,
                     boot = boot, B = B, ptype = ptype, rboot = rboot, rng = StableRNG(1322),
-                    μ̂0 = μ̂0, beta0 = beta0, betas = betamode == :all)
+                    μ̂0 = μ̂0, beta0 = beta0, betas = betamode == :all, pcnames = pcnames)
         end
 
     end
@@ -285,7 +306,8 @@ function map_variant(variant::AbstractVector; f::FormulaTerm, d::AbstractDataFra
                     boot::Bool = true,
                     B::Vector{Int64} = [200, 200, 1600, 2000, 16000, 20000],
                     ptype::Symbol = :equaltail, rboot = true, rng::AbstractRNG = StableRNG(66),
-                    μ̂0 = nothing, beta0 = nothing, betas::Bool = true)
+                    μ̂0 = nothing, beta0 = nothing, betas::Bool = true,
+                    pcnames::Union{Nothing, Vector{String}} = nothing)
 
         # ------------- Add expression and genotype data to model matrix ------------- #
 
@@ -343,6 +365,18 @@ function map_variant(variant::AbstractVector; f::FormulaTerm, d::AbstractDataFra
 
         res = DataFrame(p_analytical_res.stattype => p_analytical_res.stat)
         res[!, :p] = [p_analytical_res.p]
+
+        # -------------------- Per-context 1-df p-values (if enabled) ----------------- #
+
+        # map_locus only sets pcnames under one-way clustering, so the first
+        # column of `groups` is the (only) integer cluster coding.
+        if pcnames !== nothing
+            pk = crve_percomponent(R, A; scores = scores,
+                                   clustid = Int.(vec(groups[:, 1])))
+            for (nm, pv) in zip(pcnames, pk)
+                res[!, nm] = [pv]
+            end
+        end
 
         # --------------------------------- Bootstrap -------------------------------- #
 
@@ -686,7 +720,8 @@ repeat for every variant.
 function map_variant_shared(ws::LocusWorkspace, variant::AbstractVector;
                     groups::Matrix, R::BitMatrix, r::Vector{Float64},
                     boot::Bool, B::Vector{Int64}, ptype::Symbol, rboot::Bool,
-                    rng::AbstractRNG, betas::Bool)
+                    rng::AbstractRNG, betas::Bool,
+                    pcnames::Union{Nothing, Vector{String}} = nothing)
 
         # ---------------- Patch genotype columns of X in place ----------------------- #
 
@@ -806,6 +841,30 @@ function map_variant_shared(ws::LocusWorkspace, variant::AbstractVector;
         res = DataFrame(p_analytical_res.stattype => p_analytical_res.stat)
         res[!, :p] = [p_analytical_res.p]
 
+        # -------------------- Per-context 1-df p-values (if enabled) ----------------- #
+
+        if pcnames !== nothing
+            # The direct statistic already carries the per-component p-values
+            # (same numer/denom); on the library-fallback path they are
+            # recomputed from freshly accumulated per-cluster score sums.
+            pk = if haskey(p_analytical_res, :pk)
+                p_analytical_res.pk
+            else
+                @inbounds for j in 1:size(ws.Sg, 2)
+                    Sgj = view(ws.Sg, :, j)
+                    fill!(Sgj, 0.0)
+                    scj = view(ws.scores, :, j)
+                    for i in eachindex(ws.clustid)
+                        Sgj[ws.clustid[i]] += scj[i]
+                    end
+                end
+                crve_percomponent(R, A, ws.Sg, ws.clustshare)
+            end
+            for (nm, pv) in zip(pcnames, pk)
+                res[!, nm] = [pv]
+            end
+        end
+
         # --------------------------------- Bootstrap -------------------------------- #
 
         if boot
@@ -885,7 +944,8 @@ deterministic for a fixed worker count.
 function map_chunk(idxs::AbstractUnitRange; f::FormulaTerm, design::AbstractDataFrame,
                    μ̂0, beta0, v0::AbstractVector{Bool}, groups::Matrix, geno,
                    R::BitMatrix, r::Vector{Float64}, boot::Bool, B::Vector{Int64},
-                   ptype::Symbol, rboot::Bool, betas::Bool)
+                   ptype::Symbol, rboot::Bool, betas::Bool,
+                   pcnames::Union{Nothing, Vector{String}} = nothing)
 
     ws = isempty(idxs) ? nothing :
         build_locus_workspace(f, design, μ̂0, beta0, v0, geno[:, first(idxs)], groups)
@@ -894,11 +954,11 @@ function map_chunk(idxs::AbstractUnitRange; f::FormulaTerm, design::AbstractData
         if ws === nothing
             safe_map_variant(geno[:, i]; f = f, d = design, groups = groups, R = R, r = r,
                     boot = boot, B = B, ptype = ptype, rboot = rboot, rng = StableRNG(1322),
-                    μ̂0 = μ̂0, beta0 = beta0, betas = betas)
+                    μ̂0 = μ̂0, beta0 = beta0, betas = betas, pcnames = pcnames)
         else
             safe_map_variant_shared(ws, geno[:, i]; groups = groups, R = R, r = r,
                     boot = boot, B = B, ptype = ptype, rboot = rboot,
-                    rng = StableRNG(1322), betas = betas)
+                    rng = StableRNG(1322), betas = betas, pcnames = pcnames)
         end
     end
 

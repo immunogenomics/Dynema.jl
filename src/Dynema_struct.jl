@@ -245,7 +245,13 @@ function Base.show(io::IO, ::MIME"text/plain", m::DynemaModel)
     # (intercept, covariates, untested contexts) is still in `summ`/--out,
     # just not in this console preview.
     tt_cols = get_termtest(m) isa AbstractVector ? get_termtest(m) : [get_termtest(m)]
-    key_cols = filter(c -> c in names(glance), unique(vcat(["variant", get_stattype(m), "p", "p_boot", "p_boot_approx"], tt_cols)))
+    # Per-context 1-df interaction p-values (p_<context>; see map_locus's
+    # `percontext`) are part of the test's result, so they belong in the
+    # preview alongside the joint p.
+    pc_cols = filter(c -> startswith(c, "p_") && c ∉ ("p_boot", "p_boot_approx"), names(glance))
+    key_cols = filter(c -> c in names(glance),
+                      unique(vcat(["variant", get_stattype(m), "p"], pc_cols,
+                                  ["p_boot", "p_boot_approx"], tt_cols)))
 
     if length(key_cols) < ncol(glance)
 

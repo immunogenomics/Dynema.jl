@@ -146,7 +146,12 @@ The context's main effects are added to the model automatically via `--interacti
 
 
 !!! note
-    We can also test a **single-context interaction effect** to assess if the effect of a variant is particularly dynamic across a single context. We can just specifying a single context via `--interaction-with`. Useful for particular questions (e.g. interactions with a single cell **stimulation**, **perturbation**, **donor-level contexts**: sex, age, etc)
+    Alongside the joint (multi-context) p-value `p`, Dynema automatically
+    returns the **single-context interaction p-values** as one extra column per
+    context (here `p_cytotoxicity`, `p_treg_activation`, `p_central_memory`) --
+    computed from the same model fit, at no extra cost. These show *which*
+    context(s) drive a joint signal; the joint `p` remains the primary test
+    (pass `--per-context false` to omit them).
 
 ---
 

@@ -203,6 +203,10 @@ function parse_commandline()
             arg_type = String
             default = "lead"
             range_tester = x -> x in ("all", "none", "lead")
+        "--per-context"
+            help = "For multi-context interaction tests (--effect interaction with 2+ --interaction-with contexts): also report a per-context 1-df p-value column per tested context (p_<context>), computed from the same per-variant null fit and cluster-robust covariance as the joint test -- no extra model fitting. These decompose the joint statistic and show which context(s) drive it; they are exact under the joint null (no interactions), but with correlated contexts a true effect in one context can partially project onto another's test, so the joint p-value remains the primary inference. Ignored for main/total effects and single-context interaction tests. Default: true (pass '--per-context false' to omit the columns)."
+            arg_type = Bool
+            default = true
         "--parallel"
             help = "Distribute variants across worker processes with Distributed.jl. Use with --workers N, or start workers yourself (e.g. `julia -p 4 --project=bin bin/dynema_map.jl ...`)."
             action = :store_true
@@ -657,6 +661,7 @@ function run_map(args; term_size = displaysize(stdout))
                     ptype = ptype,
                     gene = gene_label,
                     chr = g.chr,
+                    percontext = args["per-context"],
                 )
                 gene_pos === nothing || set_pos!(res, gene_pos)
 

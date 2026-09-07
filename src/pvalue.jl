@@ -133,7 +133,61 @@ function crvetest_direct(R::AbstractMatrix, A::AbstractMatrix,
         return (stat = z, p = ccdf(Chisq(1), z^2), stattype = "z")
     else
         χ² = dot(numer, Symmetric(denom) \ numer)
-        return (stat = χ², p = ccdf(Chisq(q), χ²), stattype = "χ²")
+        # Per-component 1-df tests of each tested coefficient, from the same
+        # restricted fit: numer_k² against the k-th diagonal of the CRVE
+        # denominator (see crve_percomponent). Free by-products of the joint
+        # statistic; consumed by the per-context interaction columns.
+        pk = [ccdf(Chisq(1), numer[k]^2 / denom[k, k]) for k in 1:q]
+        return (stat = χ², p = ccdf(Chisq(q), χ²), stattype = "χ²", pk = pk)
     end
+
+end
+
+
+"""
+    crve_percomponent(R, A, Sg, clustshare) -> Vector{Float64}
+    crve_percomponent(R, A; scores, clustid) -> Vector{Float64}
+
+Per-component 1-df CRVE score p-values for each tested row of `R`, computed
+from the *same* restricted (null) fit as the joint test: with `numer` and
+`K` exactly as in [`crvetest_direct`](@ref),
+
+    p_k = ccdf(Chisq(1), numer[k]² / (K'K)[k,k])
+
+These are tests of each coefficient under the joint null (all tested
+coefficients zero) -- exact size under that null, but under partial
+alternatives with correlated contexts, a true effect in one context can
+project onto another's score. They decompose the joint statistic; the joint
+test remains the primary inference.
+
+The keyword method builds per-cluster score sums from row-level `scores`
+and one-way integer cluster ids (used by the generic, non-workspace path).
+"""
+function crve_percomponent(R::AbstractMatrix, A::AbstractMatrix,
+                           Sg::AbstractMatrix, clustshare::AbstractVector)
+
+    ARt = A * R'
+    S = vec(sum(Sg, dims = 1))
+    numer = ARt' * S
+    K = Sg * ARt
+    K .-= clustshare * (S' * ARt)
+    return [ccdf(Chisq(1), numer[k]^2 / dot(view(K, :, k), view(K, :, k)))
+            for k in 1:size(R, 1)]
+
+end
+
+function crve_percomponent(R::AbstractMatrix, A::AbstractMatrix;
+                           scores::AbstractMatrix, clustid::AbstractVector{<:Integer})
+
+    G, n = maximum(clustid), length(clustid)
+    Sg = zeros(G, size(scores, 2))
+    clustshare = zeros(G)
+    @inbounds for i in 1:n
+        g = clustid[i]
+        clustshare[g] += 1.0
+        @views Sg[g, :] .+= scores[i, :]
+    end
+    clustshare ./= n
+    return crve_percomponent(R, A, Sg, clustshare)
 
 end

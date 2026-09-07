@@ -12,6 +12,15 @@ Dynema.ExpandedGeno
 Dynema.ExpandedGenoView
 ```
 
+The CRVE score test itself, and the per-context 1-df decomposition reported
+by multi-context interaction tests (the `p_<context>` columns; see
+`map_locus`'s `percontext` keyword):
+
+```@docs
+Dynema.crvetest_direct
+Dynema.crve_percomponent
+```
+
 !!! note
     `Dynema.DynemaModel`, the struct returned by [`map_locus`](@ref), is
     intentionally accessed only through its `get_*`/`set_*` accessors (see
