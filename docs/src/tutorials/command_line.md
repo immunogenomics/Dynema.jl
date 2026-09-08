@@ -179,10 +179,17 @@ Arguments:
   the bootstrap distribution that extrapolates smoothly below that floor).
   Uses the optional WildBootTests package, installed automatically into the
   `bin/` environment on first use.
+- `--threads N`: map each gene's variants on N Julia threads within a single
+  process -- the recommended way to parallelize on one machine/node (lower
+  memory and startup cost than `--workers`; the launcher starts Julia with the
+  right thread count automatically). Not used with `--boot`. Like `--workers`,
+  interaction-test results are reproducible for a fixed thread count but can
+  differ at IRLS convergence tolerance (~1e-7) across thread counts.
 - `--workers N`: start N local worker processes and distribute each gene's
-  variants across them (implies `--parallel`). Worth it for long runs
-  (interaction effects, bootstrapping); short runs are dominated by fixed
-  startup costs.
+  variants across them (workers started via `julia -p N` are detected and
+  used automatically). Prefer `--threads` on a single node; `--workers`
+  remains the option for bootstrap runs (`--boot`). Short runs are dominated
+  by fixed startup costs either way.
 
 
 ## Mapping many genes: batches

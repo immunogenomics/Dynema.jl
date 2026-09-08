@@ -17,4 +17,18 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ]; then
   export JULIA_CPU_TARGET="${JULIA_CPU_TARGET:-generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1)}"
 fi
+
+# --threads N: Julia's thread count is fixed at process startup, so it is
+# scanned here and passed to julia as -t N (the flag itself stays in "$@" for
+# ArgParse/--help). An explicit JULIA_NUM_THREADS export takes precedence.
+THREADS=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--threads" ]; then THREADS="$a"; fi
+  prev="$a"
+done
+if [ -z "${JULIA_NUM_THREADS:-}" ] && [ -n "$THREADS" ] \
+   && [ "$THREADS" -gt 1 ] 2>/dev/null; then
+  exec julia -t "$THREADS" --project="$DIR" "$DIR/dynema_map.jl" "$@"
+fi
 exec julia --project="$DIR" "$DIR/dynema_map.jl" "$@"

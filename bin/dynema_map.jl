@@ -71,6 +71,24 @@ Pkg.instantiate()
 # --help/validation. Equivalent to launching with `julia -p N`.
 using Distributed
 using LinearAlgebra: BLAS
+
+# --threads N: Julia's thread count is fixed at startup, so the bash launcher
+# (bin/dynema-map) translates --threads into `julia -t N` before this script
+# runs. Here we only (a) warn when the flag was given but the process is
+# single-threaded (direct .jl invocation without -t), and (b) divide BLAS
+# threads across Julia threads so the GEMM/IRLS steps don't oversubscribe.
+let i = findfirst(==("--threads"), ARGS)
+    if i !== nothing && i < length(ARGS)
+        nt = tryparse(Int, ARGS[i + 1])
+        if nt !== nothing && nt > 1 && Threads.nthreads() == 1
+            @warn "--threads $nt requested but Julia is running single-threaded. " *
+                  "Use the ./bin/dynema-map launcher (it starts Julia with -t automatically), " *
+                  "or invoke julia with `-t $nt` / export JULIA_NUM_THREADS=$nt."
+        end
+    end
+end
+Threads.nthreads() > 1 && BLAS.set_num_threads(max(1, Sys.CPU_THREADS ÷ Threads.nthreads()))
+
 let i = findfirst(==("--workers"), ARGS)
     if i !== nothing && i < length(ARGS)
         nw = tryparse(Int, ARGS[i + 1])
@@ -207,11 +225,12 @@ function parse_commandline()
             help = "For multi-context interaction tests (--effect interaction with 2+ --interaction-with contexts): also report a per-context 1-df p-value column per tested context (p_<context>), computed from the same per-variant null fit and cluster-robust covariance as the joint test -- no extra model fitting. These decompose the joint statistic and show which context(s) drive it; they are exact under the joint null (no interactions), but with correlated contexts a true effect in one context can partially project onto another's test, so the joint p-value remains the primary inference. Ignored for main/total effects and single-context interaction tests. With --boot, the bootstrap p-values (p_boot, p_boot_approx) always refer to the joint test; per-context p-values are analytical only. Default: true (pass '--per-context false' to omit the columns)."
             arg_type = Bool
             default = true
-        "--parallel"
-            help = "Distribute variants across worker processes with Distributed.jl. Use with --workers N, or start workers yourself (e.g. `julia -p 4 --project=bin bin/dynema_map.jl ...`)."
-            action = :store_true
+        "--threads"
+            help = "Number of Julia threads to map each gene's variants with (contiguous variant blocks, one per thread, within this single process). Lighter than --workers (no extra processes, no data serialization) and the recommended way to parallelize on one node. The ./bin/dynema-map launcher starts Julia with this thread count automatically; if you invoke bin/dynema_map.jl directly, start Julia with `-t N` (or export JULIA_NUM_THREADS) yourself -- thread count cannot change after startup. Ignored when worker processes are active (--workers or julia -p), and not used with --boot (the bootstrap library manages its own threading). Like --workers, interaction-test results are reproducible for a fixed thread count but can differ at IRLS convergence tolerance (~1e-7) across thread counts."
+            arg_type = Int
+            default = 0
         "--workers"
-            help = "Number of local worker processes to start for parallel mapping. Implies --parallel."
+            help = "Number of local worker processes to start for parallel mapping. Worker processes started outside this flag (e.g. `julia -p 4 --project=bin bin/dynema_map.jl ...`) are detected and used automatically. For single-node runs prefer --threads (lower memory, no serialization); --workers remains useful with --boot or across-process setups."
             arg_type = Int
             default = 0
         "--skip-existing"
@@ -654,7 +673,7 @@ function run_map(args; term_size = displaysize(stdout))
                     meta = meta,
                     groups = meta[:, donor_col],
                     termtest = mdl.termtest,
-                    parallel = args["parallel"] || args["workers"] > 0,
+                    parallel = args["workers"] > 0 || nworkers() > 1,
                     betas = Symbol(args["betas"]),
                     boot = args["boot"],
                     B = B,

@@ -32,7 +32,11 @@ specified (e.g. donor structure). For example ["donor1", "donor2", "donor1", "do
 own locus workspace, so the fast path applies in parallel too. Warm-start chains
 restart at block boundaries, so interaction-test results are reproducible for a
 fixed worker count but can differ at IRLS convergence tolerance (~1e-7) across
-worker counts or vs. a serial run
+worker counts or vs. a serial run. Without `parallel`, if the process has more
+than one Julia thread (start with `julia -t N`), variants are threaded across
+contiguous blocks instead -- same block semantics and reproducibility caveat,
+lower overhead than workers (no serialization, one process). Threading is not
+used when `boot = true` (the bootstrap library manages its own threading)
 - `H0`: Null hypothesis value. By default `0`
 
 Testing always uses a cluster-robust (CRVE) score/Lagrange-multiplier test at
@@ -190,7 +194,16 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
     # skipped (nothing) when the formula's genotype terms are not plain
     # linear-in-G terms or the workspace fails its self-check.
     use_parallel = parallel && nworkers() > 1
-    ws = (!use_parallel && size(geno, 2) > 0) ?
+    # Thread-level parallelism (Threads.@threads over contiguous variant
+    # blocks, one private workspace per block): used when the process has
+    # >1 Julia thread and Distributed workers are not in play. Disabled
+    # under `boot`: WildBootTests manages its own threading and nesting the
+    # two is untested. Like the workers path, warm-start chains restart at
+    # block boundaries, so interaction results are reproducible for a fixed
+    # thread count but can differ at IRLS convergence tolerance (~1e-7)
+    # across thread counts or vs. a serial run.
+    use_threads = !use_parallel && !boot && Threads.nthreads() > 1 && size(geno, 2) > 1
+    ws = (!use_parallel && !use_threads && size(geno, 2) > 0) ?
         build_locus_workspace(f, design, μ̂0, beta0, v0, geno[:, 1], groups) : nothing
 
     # ---------- Run association for each variant in input genotype data --------- #
@@ -213,6 +226,25 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
                       groups = groups, geno = geno, R = R, r = r, boot = boot, B = B,
                       ptype = ptype, rboot = rboot, betas = betamode == :all,
                       pcnames = pcnames)
+        end
+        reduce(vcat, chunk_results)
+
+    elseif use_threads
+
+        # Contiguous blocks, one per thread; each thread builds and owns its
+        # private workspace (no shared mutable state -- `design`, `geno` and
+        # `groups` are only read). No per-variant progress bar on this path.
+        nv = size(geno, 2)
+        nchunks = min(Threads.nthreads(), nv)
+        bounds = round.(Int, range(0, nv; length = nchunks + 1))
+        chunks = [bounds[c]+1:bounds[c+1] for c in 1:nchunks if bounds[c+1] > bounds[c]]
+        println("mapping $nv variant(s) on $(length(chunks)) thread(s)...")
+        chunk_results = Vector{Any}(undef, length(chunks))
+        Threads.@threads :static for ci in eachindex(chunks)
+            chunk_results[ci] = map_chunk(chunks[ci]; f = f, design = design, μ̂0 = μ̂0,
+                      beta0 = beta0, v0 = v0, groups = groups, geno = geno, R = R, r = r,
+                      boot = boot, B = B, ptype = ptype, rboot = rboot,
+                      betas = betamode == :all, pcnames = pcnames)
         end
         reduce(vcat, chunk_results)
 
@@ -528,6 +560,15 @@ function build_locus_workspace(f::FormulaTerm, design::AbstractDataFrame, μ̂0,
 
     rhs_terms = f.rhs isa Tuple ? collect(f.rhs) : [f.rhs]
     all(t -> !_contains_G(t) || _linear_in_G(t), rhs_terms) || return nothing
+
+    # This function writes a :G column into `design` (for the G = 1 build and
+    # the self-check below). Under threaded mapping, several workspaces are
+    # built concurrently against the SAME design, so those writes must be
+    # thread-local: a copycols=false copy shares every existing column
+    # (read-only here) but gives this call its own column bindings -- adding
+    # or assigning :G touches only this copy. Cheap: no cell-level data is
+    # duplicated.
+    design = copy(design; copycols = false)
 
     ws = try
 
