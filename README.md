@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="docs/src/assets/logo.svg" alt="Dynema.jl logo" width="220">
-</p>
+<img src="docs/src/assets/logo.svg" alt="Dynema.jl logo" width="180" align="right">
 
 # Dynema (Dynamic eQTL mapping for single cells)
 
