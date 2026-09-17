@@ -1,6 +1,6 @@
 name = "Dynema"
 uuid = "bc27e32f-14b0-4d32-98d5-b88f38cd41e7"
-version = "1.0.0-DEV"
+version = "1.0.0"
 authors = ["Jose Alquicira-Hernandez"]
 
 [workspace]
@@ -33,17 +33,26 @@ WildBootTests = "65c2e505-86ba-4c19-93f1-95506c1443d5"
 DynemaWildBootTestsExt = "WildBootTests"
 
 [compat]
+CSV = "0.10.17"
 CategoricalArrays = "0.10.8"
+CodecZlib = "0.7.9"
+DataFrames = "1.8.2"
+Distributed = "1"
 Distributions = "0.25.118"
 GLM = "1.9.0"
 LinearAlgebra = "1.11.0"
 NamedArrays = "0.10.3"
 PrettyTables = "2.4.0"
 ProgressMeter = "1.10.2"
+Random = "1"
 StableRNGs = "1.0.3"
 StaticArrays = "1.9.12"
+Statistics = "1"
+StatsBase = "0.34.13"
+StatsModels = "0.7.10"
 WildBootTests = "1.0.1"
-julia = "1.9"
+htslib_jll = "1.19.1"
+julia = "1.11"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

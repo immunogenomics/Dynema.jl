@@ -186,16 +186,73 @@ The context's main effects are added to the model automatically via `--interacti
 
 Each command-line run writes one file per gene plus a summary:
 
-- **`<out>_<gene>.tsv`** (e.g. `main_CTSS.tsv`) -- one row per cis variant:
-  `variant`, `chr`, `pos` (from the VCF), the score statistic (`z`, or `χ²`
-  for joint tests), the analytical `p`, and effect-size estimates for the
-  lead variant(s) (the `--betas lead` default; `--betas all` fits every
-  variant).
-- **`<out>_summary.tsv`** -- A summary of the lead variants for all tests across all genes.
+- **`<out>_<gene>.tsv`** (e.g. `main_CTSS.tsv`; `<out>_<effect>_<gene>.tsv`
+  in a multi-effect run) -- the per-variant results, one row per cis variant.
+- **`<out>_summary.tsv`** -- the batch summary, one row per gene × effect
+  with its lead variant.
 - **`<out>.log`** -- the full log messages.
+
+### The per-gene table (`<out>_<gene>.tsv`)
+
+One row per cis variant, with these columns:
+
+- `variant` -- variant identifier, as given in the VCF.
+- `chr`, `pos` -- the variant's chromosome and position, copied from the VCF.
+- `z` *or* `χ²` -- the cluster-robust score statistic. Tests of a single
+  term (`--effect main`, or `interaction` with one context) report a signed
+  `z`. Joint tests (`interaction`with 2+ contexts, `total`) report a `χ²` 
+  with as many degrees of freedom as tested terms.
+- `p` -- the analytical *p*-value of the score test with cluster-robust
+  (donor-level) variance: two-sided normal for `z`, upper-tail χ² for
+  joint tests. 
+- `p_<context>` (e.g. `p_CV1`, `p_CV2`, ...) -- only for multi-context
+  interaction tests (on by default; `--per-context false` to omit):
+  per-context 1-df *p*-values decomposing the joint statistic, computed
+  from the same null fit and cluster-robust covariance. They show which
+  context(s) drive a joint signal.
+- `p_boot`, `p_boot_approx` -- only with `--boot`: the wild score bootstrap
+  *p*-value and its beta-distribution-smoothed version (useful when the
+  true *p* is below the resolution of the bootstrap replicates). 
+- Effect-size columns -- one column per model term, named as in the fitted
+  formula: `(Intercept)`, `G` (the genotype main effect), one column per
+  covariate and context, and `G & <context>` for each interaction term.
+  These come from refitting the full unrestricted GLM at the variant, so
+  they are exact maximum-likelihood estimates, not score-test
+  approximations. The model is Poisson with a log link, so estimates are
+  on the natural-log scale: `G` is the log fold change in expression per
+  copy of the counted allele, and `G & <context>` is the change in that
+  per-allele log fold change per unit of the context variable. With
+  `--betas lead` (the default) only the lead variant's row -- smallest
+  analytical `p`, including exact ties -- is filled and all other rows are
+  `missing`; `--betas all` fits every variant (slower); `--betas none`
+  omits the columns entirely.
+
+### The batch summary (`<out>_summary.tsv`)
+
+One row per gene × effect, concatenated across chunks, this is the table
+to scan for a study's top associations:
+
+- `gene`, `effect` -- the gene label and which test the row summarizes
+  (`main`, `interaction`, or `total`).
+- `status` -- `ok`, `skipped` (output already existed under
+  `--skip-existing`; lead statistics are re-read from the existing file
+  when possible), or `failed` (one failed gene × effect does not stop the
+  rest of the batch; check the log for the error).
+- `chr`, `tss` -- the gene's chromosome and TSS from the bed file.
+- `n_variants` -- number of cis variants tested.
+- `lead_variant`, `lead_pos` -- the variant with the smallest analytical
+  `p` for this gene × effect.
+- `stat_type`, `lead_stat` -- which statistic the effect uses (`z` or
+  `χ²`) and its value at the lead variant.
+- `lead_p` -- the lead variant's analytical *p*-value.
+- `lead_p_boot`, `lead_p_boot_approx` -- the lead variant's bootstrap
+  *p*-values (empty unless the run used `--boot`).
+- `out_file` -- path to the gene's per-variant table, for drill-down.
 
 
 Because the data are simulated with known effects, the results should tell a clean story: *TSPAN32* has a hit near its TSS in all three runs (a main effect plus a `G × cytotoxicity` interaction); *CTSS*  has no **main** effect but has considerable **interaction** and **total** effects (its simulated effect exists only through `treg_activation`); *ACTB* stays null everywhere.
+
+> The dataset included in this demo is simulated to demonstrate Dynema's application. It does not represent a real biological scenario.
 
 ## Where to next
 

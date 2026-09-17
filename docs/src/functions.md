@@ -4,7 +4,11 @@ CurrentModule = Dynema
 
 # API Reference
 
-This page documents every function exported by Dynema.jl.
+This page documents every function exported by Dynema.jl. The diagram below
+shows where the main functions sit in the workflow, from raw inputs to
+summary tables.
+
+![Dynema computational workflow](assets/workflow.png)
 
 ## Mapping
 
