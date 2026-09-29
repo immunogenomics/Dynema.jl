@@ -92,6 +92,7 @@ not in the log -- see the log's own last lines / the terminal for that).
 """
 function with_tee_log(f, logpath::AbstractString; command::AbstractString)
 
+    isempty(dirname(logpath)) || mkpath(dirname(logpath))
     log_io = open(logpath, "w")
     println(log_io, "# Command:  ", command)
     println(log_io, "# Started:  ", Dates.now())
