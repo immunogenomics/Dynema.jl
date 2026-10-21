@@ -1,13 +1,58 @@
 
+# ---------------------------------------------------------------------------- #
+#                    Statistic types and small-sample factors                  #
+# ---------------------------------------------------------------------------- #
+#
+# Dynema reports one of four statistic types, named after the column that
+# holds the statistic in the summary table:
+#
+#                      1 df (one tested term)     > 1 df (joint test)
+#   small = false      "z"  (signed, N(0,1))      "χ²"  (χ²_q)
+#   small = true       "t"  (signed, t_{G-1})     "F"   (F_{q, G-1})
+#
+# "z"/"t" are signed, two-sided statistics; "χ²"/"F" are non-negative,
+# upper-tailed. `_signed` distinguishes the two families everywhere a
+# bootstrap tail count or a reference distribution is needed.
+_signed(stattype) = stattype == "z" || stattype == "t"
+
+"""
+    smallsample_factors(small, G, nobs) -> (clusteradj, smallsample, dof_r)
+
+Small-sample factors of the cluster-robust score test, replicating
+`WildBootTests.jl`'s ML (score) mode with one-way clustering and `small = true`
+(`init.jl`: `clusteradj = small`, `smallsample = _dof / (Nobs - robust)`,
+`dof_r = G - 1`), which is how Dynema invokes it:
+
+  - `clusteradj = G / (G - 1)` multiplies the cluster-robust denominator
+    (the "meat"), where `G` is the number of clusters (donors);
+  - `smallsample = nobs / (nobs - 1)` rescales the statistic (its square root
+    for 1 df). WildBootTests derives `_dof = nobs - k`, but in ML mode Dynema
+    supplies no `predexog`, so its `k` is 0. For single-cell data
+    (`nobs` = number of cells) the factor is essentially 1; it is kept so the
+    direct implementation reproduces the library to numerical precision;
+  - `dof_r = G - 1` is the residual degrees of freedom of the reference
+    t (1 df) or F (`q` df) distribution.
+
+With `small = false` all three are neutral: `(1, 1, 0)`, and the reference
+distributions are N(0,1) (1 df) and χ² (`q` df).
+"""
+function smallsample_factors(small::Bool, G::Integer, nobs::Integer)
+    small || return (1.0, 1.0, 0.0)
+    G >= 2 || throw(ArgumentError("small = true needs at least 2 clusters (donors); got $G"))
+    nobs >= 2 || throw(ArgumentError("small = true needs at least 2 observations; got $nobs"))
+    return (G / (G - 1), nobs / (nobs - 1), Float64(G - 1))
+end
+
 """
     pass_counts(stat, boot, stattype) -> (c1, c2)
 
 Allocation-free tail counts of `stat` against a bootstrap distribution chunk:
-for "z", the (greater, less) counts (whose running sums stay additive across
-chunks, unlike their min); for "χ²", `(count(boot .>= stat), 0)`.
+for the signed types ("z", "t"), the (greater, less) counts (whose running
+sums stay additive across chunks, unlike their min); for the upper-tailed
+types ("χ²", "F"), `(count(boot .>= stat), 0)`.
 """
 function pass_counts(stat, boot, stattype)
-    if stattype == "z"
+    if _signed(stattype)
         (count(b -> stat > b, boot), count(b -> stat < b, boot))
     else
         (count(b -> b >= stat, boot), 0)
@@ -15,7 +60,7 @@ function pass_counts(stat, boot, stattype)
 end
 
 # Final tail count from accumulated (c1, c2) totals
-combine_pass(c1, c2, stattype) = stattype == "z" ? min(c1, c2) : c1
+combine_pass(c1, c2, stattype) = _signed(stattype) ? min(c1, c2) : c1
 
 function pass(stat, boot, stattype)
     c1, c2 = pass_counts(stat, boot, stattype)
@@ -25,13 +70,17 @@ end
 # From a precomputed tail count and total replication count
 function compute_pvalue(pass_obs::Integer, nboot::Integer, stattype)
 
-    if stattype == "z"
+    if _signed(stattype)
 
         pass_obs == 0 ? 2 / (nboot + 1) : 2 * pass_obs / nboot
 
-    elseif stattype == "χ²"
+    elseif stattype == "χ²" || stattype == "F"
 
         pass_obs == 0 ? 1 / (nboot + 1) : pass_obs / nboot
+
+    else
+
+        throw(ArgumentError("unknown statistic type \"$stattype\" (expected z, t, χ² or F)"))
 
     end
 
@@ -42,13 +91,15 @@ compute_pvalue(stat, boot, stattype) =
 
 
 """
-    beta_approx_pvalue(stat, boot, stattype, q) -> Float64
+    beta_approx_pvalue(stat, boot, stattype, q; dof_r = 0) -> Float64
 
 FastQTL-style beta approximation of the bootstrap p-value, lifting the
 empirical `p_boot`'s resolution floor of ~1/B. Both the observed statistic
 and every bootstrap draw are transformed to *nominal* p-values under the
-analytical reference distribution (two-sided normal for `"z"`, chi-square
-with `q` degrees of freedom for `"χ²"`). If that reference were exactly
+analytical reference distribution: two-sided normal for `"z"`, two-sided
+Student's t with `dof_r` degrees of freedom for `"t"`, chi-square with `q`
+degrees of freedom for `"χ²"`, and F with `(q, dof_r)` degrees of freedom for
+`"F"` (`dof_r = G - 1`, see [`smallsample_factors`](@ref)). If that reference were exactly
 correct, the bootstrap nominal p-values would be Uniform(0,1) = Beta(1,1);
 instead, a `Beta(a, b)` is fit to them by maximum likelihood (with a
 method-of-moments fallback), capturing any miscalibration, and the observed
@@ -57,9 +108,19 @@ smooth p-value that extrapolates below 1/B through the parametric form --
 exactly how FastQTL extrapolates beyond its permutation count, applied here
 to the score-bootstrap distribution. Returns `NaN` if the fit is degenerate.
 """
-function beta_approx_pvalue(stat, boot, stattype, q::Int)
+function beta_approx_pvalue(stat, boot, stattype, q::Int; dof_r::Real = 0)
 
-    tonominal(x) = stattype == "z" ? 2 * ccdf(Normal(), abs(x)) : ccdf(Chisq(q), x)
+    tonominal = if stattype == "z"
+        x -> 2 * ccdf(Normal(), abs(x))
+    elseif stattype == "t"
+        x -> 2 * ccdf(TDist(dof_r), abs(x))
+    elseif stattype == "F"
+        x -> ccdf(FDist(q, dof_r), x)
+    elseif stattype == "χ²"
+        x -> ccdf(Chisq(q), x)
+    else
+        throw(ArgumentError("unknown statistic type \"$stattype\" (expected z, t, χ² or F)"))
+    end
 
     ps = clamp.(tonominal.(boot), 1e-12, 1 - 1e-12)
 
@@ -98,26 +159,12 @@ function crvetest(R, r; kwargs...)
 end
 
 
-"""
-    crvetest_direct(R, A, Sg, clustshare)
-
-Direct implementation of the analytical CRVE score test for the shared-null
-fast path, replicating `WildBootTests.scoretest`'s ml-mode statistic
-(`reps = 0`, `imposenull = true`, `scorebs = true`, `small = false`,
-one-way clustering) without the library's per-call setup:
-
-  - `numer = (A R')' S`, with `S` the total score sum;
-  - cluster-level `K = Sg * (A R')`, recentered by each cluster's share of
-    observations, so `denom = K'K` is the CRVE meat transformed by `A R'`;
-  - q = 1: `z = numer / sqrt(denom)`, `p = ccdf(Chisq(1), z²)` (two-tailed);
-    q > 1: `χ² = numer' denom⁻¹ numer`, `p = ccdf(Chisq(q), χ²)`.
-
-`Sg` is the G × k matrix of per-cluster score sums; `clustshare[g]` is
-cluster g's share of observations. Returns `(stat, p, stattype)` in the same
-shape `crvetest` results are consumed.
-"""
-function crvetest_direct(R::AbstractMatrix, A::AbstractMatrix,
-                         Sg::AbstractMatrix, clustshare::AbstractVector)
+# One-way CRVE score-test ingredients shared by every analytical routine:
+# the numerator `numer = (A R')' S` (a one-step Newton estimate of the tested
+# coefficient(s) from the null fit) and the recentered CRVE "meat" transformed
+# by `A R'`, `denom = K'K` (no small-sample factor applied).
+function _score_numer_denom(R::AbstractMatrix, A::AbstractMatrix,
+                            Sg::AbstractMatrix, clustshare::AbstractVector)
 
     ARt = A * R'                          # k × q
     S = vec(sum(Sg, dims = 1))            # total score sum (k)
@@ -127,32 +174,106 @@ function crvetest_direct(R::AbstractMatrix, A::AbstractMatrix,
     K .-= clustshare * (S' * ARt)         # recenter, as WildBootTests does for scorebs
     denom = K' * K                        # q × q CRVE denominator
 
+    return numer, denom
+
+end
+
+# p-value of a signed 1-df statistic: N(0,1) when dof_r == 0, t(dof_r) otherwise
+_p1(stat, dof_r) = dof_r == 0 ? ccdf(Chisq(1), stat^2) : 2 * ccdf(TDist(dof_r), abs(stat))
+
+"""
+    crvetest_direct(R, A, Sg, clustshare; small = false, nobs = 0)
+
+Direct implementation of the analytical CRVE score test for the shared-null
+fast path, replicating `WildBootTests.scoretest`'s ml-mode statistic
+(`reps = 0`, `imposenull = true`, `scorebs = true`, one-way clustering)
+without the library's per-call setup:
+
+  - `numer = (A R')' S`, with `S` the total score sum;
+  - cluster-level `K = Sg * (A R')`, recentered by each cluster's share of
+    observations, so `denom = K'K` is the CRVE meat transformed by `A R'`;
+  - `small = false` (default): q = 1: `z = numer / sqrt(denom)`,
+    `p = ccdf(Chisq(1), z²)` (two-tailed); q > 1: `χ² = numer' denom⁻¹ numer`,
+    `p = ccdf(Chisq(q), χ²)`;
+  - `small = true`: with `(cm, ss, dof_r) = smallsample_factors(true, G, nobs)`
+    (`G = size(Sg, 1)` clusters), the denominator becomes `cm * denom`,
+    q = 1: `t = sqrt(ss) * numer / sqrt(cm * denom)`,
+    `p = 2 * ccdf(TDist(G - 1), |t|)`; q > 1:
+    `F = (ss / q) * numer' (cm * denom)⁻¹ numer`,
+    `p = ccdf(FDist(q, G - 1), F)`.
+
+`Sg` is the G × k matrix of per-cluster score sums; `clustshare[g]` is
+cluster g's share of observations; `nobs` (number of observations/cells) is
+required when `small = true`.
+
+Returns `(stat, p, stattype, beta, se, dof_r)` in the same shape `crvetest`
+results are consumed (plus `pk` for q > 1). `beta = numer` is the one-step
+(score-based) estimate of each tested coefficient from the null fit and
+`se = sqrt(cm * diag(denom) / ss)` its cluster-robust standard error, so that
+`beta ./ se` reproduces the reported z/t statistic of each tested term (for
+q = 1, exactly `stat`). `stattype` is `"z"`/`"t"` for q = 1 and `"χ²"`/`"F"`
+for q > 1.
+"""
+function crvetest_direct(R::AbstractMatrix, A::AbstractMatrix,
+                         Sg::AbstractMatrix, clustshare::AbstractVector;
+                         small::Bool = false, nobs::Integer = 0)
+
+    numer, denom = _score_numer_denom(R, A, Sg, clustshare)
+    cm, ss, dof_r = smallsample_factors(small, size(Sg, 1), nobs)
+
     q = size(R, 1)
+    se = sqrt.(cm .* diag(denom) ./ ss)   # SE of each tested coefficient
+
     if q == 1
-        z = numer[1] / sqrt(denom[1, 1])
-        return (stat = z, p = ccdf(Chisq(1), z^2), stattype = "z")
+        stat = numer[1] / se[1]
+        return (stat = stat, p = _p1(stat, dof_r), stattype = small ? "t" : "z",
+                beta = numer, se = se, dof_r = dof_r)
     else
-        χ² = dot(numer, Symmetric(denom) \ numer)
+        χ² = dot(numer, Symmetric(cm .* denom) \ numer)
         # Per-component 1-df tests of each tested coefficient, from the same
-        # restricted fit: numer_k² against the k-th diagonal of the CRVE
-        # denominator (see crve_percomponent). Free by-products of the joint
-        # statistic; consumed by the per-context interaction columns.
-        pk = [ccdf(Chisq(1), numer[k]^2 / denom[k, k]) for k in 1:q]
-        return (stat = χ², p = ccdf(Chisq(q), χ²), stattype = "χ²", pk = pk)
+        # restricted fit: (numer_k / se_k) against the 1-df reference (see
+        # crve_percomponent). Free by-products of the joint statistic;
+        # consumed by the per-context interaction columns.
+        pk = [_p1(numer[k] / se[k], dof_r) for k in 1:q]
+        stat = small ? (ss / q) * χ² : χ²
+        p = small ? ccdf(FDist(q, dof_r), stat) : ccdf(Chisq(q), stat)
+        return (stat = stat, p = p, stattype = small ? "F" : "χ²", pk = pk,
+                beta = numer, se = se, dof_r = dof_r)
     end
 
 end
 
 
+# Per-cluster score sums (G × k) and each cluster's share of observations,
+# from row-level scores and one-way integer cluster ids 1..G.
+function _cluster_score_sums(scores::AbstractMatrix, clustid::AbstractVector{<:Integer})
+
+    G, n = maximum(clustid), length(clustid)
+    Sg = zeros(G, size(scores, 2))
+    clustshare = zeros(G)
+    @inbounds for i in 1:n
+        g = clustid[i]
+        clustshare[g] += 1.0
+        @views Sg[g, :] .+= scores[i, :]
+    end
+    clustshare ./= n
+    return Sg, clustshare
+
+end
+
+
 """
-    crve_percomponent(R, A, Sg, clustshare) -> Vector{Float64}
-    crve_percomponent(R, A; scores, clustid) -> Vector{Float64}
+    crve_percomponent(R, A, Sg, clustshare; small = false, nobs = 0) -> Vector{Float64}
+    crve_percomponent(R, A; scores, clustid, small = false) -> Vector{Float64}
 
 Per-component 1-df CRVE score p-values for each tested row of `R`, computed
 from the *same* restricted (null) fit as the joint test: with `numer` and
-`K` exactly as in [`crvetest_direct`](@ref),
+`denom = K'K` exactly as in [`crvetest_direct`](@ref), and
+`se_k = sqrt(cm * denom[k,k] / ss)` (factors from
+[`smallsample_factors`](@ref); both 1 when `small = false`),
 
-    p_k = ccdf(Chisq(1), numer[k]² / (K'K)[k,k])
+    p_k = 2 * ccdf(Normal(), |numer[k] / se_k|)     (small = false)
+    p_k = 2 * ccdf(TDist(G - 1), |numer[k] / se_k|)  (small = true)
 
 These are tests of each coefficient under the joint null (all tested
 coefficients zero) -- exact size under that null, but under partial
@@ -164,30 +285,88 @@ The keyword method builds per-cluster score sums from row-level `scores`
 and one-way integer cluster ids (used by the generic, non-workspace path).
 """
 function crve_percomponent(R::AbstractMatrix, A::AbstractMatrix,
-                           Sg::AbstractMatrix, clustshare::AbstractVector)
+                           Sg::AbstractMatrix, clustshare::AbstractVector;
+                           small::Bool = false, nobs::Integer = 0)
 
-    ARt = A * R'
-    S = vec(sum(Sg, dims = 1))
-    numer = ARt' * S
-    K = Sg * ARt
-    K .-= clustshare * (S' * ARt)
-    return [ccdf(Chisq(1), numer[k]^2 / dot(view(K, :, k), view(K, :, k)))
-            for k in 1:size(R, 1)]
+    numer, denom = _score_numer_denom(R, A, Sg, clustshare)
+    cm, ss, dof_r = smallsample_factors(small, size(Sg, 1), nobs)
+    return [_p1(numer[k] / sqrt(cm * denom[k, k] / ss), dof_r) for k in 1:size(R, 1)]
 
 end
 
-function crve_percomponent(R::AbstractMatrix, A::AbstractMatrix;
-                           scores::AbstractMatrix, clustid::AbstractVector{<:Integer})
+"""
+    crve_se(X, y, β, groups; small = false) -> Vector{Float64}
 
-    G, n = maximum(clustid), length(clustid)
-    Sg = zeros(G, size(scores, 2))
-    clustshare = zeros(G)
-    @inbounds for i in 1:n
-        g = clustid[i]
-        clustshare[g] += 1.0
-        @views Sg[g, :] .+= scores[i, :]
+One-way cluster-robust (CRVE) standard errors of the *unrestricted*
+Poisson/log-link coefficients `β` (the `se_wald_<term>` output columns, reported
+alongside the unrestricted estimates selected with `betas`).
+
+Sandwich estimator `V = (cm / ss) A (Σ_g s_g s_g') A`, where
+
+  - `A = (X'diag(μ̂)X)⁻¹` is the model-based bread,
+  - `s_g` is the sum of the scores `(y - μ̂) .* X` over the cells of cluster
+    (donor) `g`,
+  - everything is evaluated at the unrestricted fit `μ̂ = exp.(Xβ)`,
+  - `cm = ss = 1` when `small = false`; with `small = true` they are the same
+    small-sample factors as the score test
+    ([`smallsample_factors`](@ref): `cm = G/(G-1)`, `ss = nobs/(nobs-1)`),
+    so that SEs are on the same footing as the reported t statistics.
+
+The SE of coefficient `j` is `sqrt(V[j, j])`, on the same (natural-log) scale
+as `β[j]`. `β[j] / se[j]` is therefore a Wald z-statistic (`small = false`)
+or a Wald t-statistic on `G - 1` degrees of freedom (`small = true`).
+
+!!! note
+    These SEs are *not* the quantities behind Dynema's p-values. The `z`/`t`
+    and `p` columns come from a score test at the restricted (null) fit, with
+    recentered scores (see [`crvetest_direct`](@ref)); this SE comes from the
+    unrestricted fit, so `|β| / se` will generally differ from `|z|` (they
+    agree asymptotically, and closely for small effects). With
+    `small = false` no small-sample correction is applied, matching the score
+    test, so SEs are optimistic with few donors. The score-test `p` (or
+    `p_boot`) remains the primary inference; use `se_wald_<term>` for
+    effect-size uncertainty and meta-analysis.
+
+Returns `NaN`s under multiway clustering (`size(groups, 2) != 1`), which is
+not implemented here.
+"""
+function crve_se(X::AbstractMatrix, y::AbstractVector, β::AbstractVector, groups::AbstractMatrix;
+                 small::Bool = false)
+
+    k = size(X, 2)
+    size(groups, 2) == 1 || return fill(NaN, k)
+
+    clustid = Int.(vec(groups[:, 1]))
+    μ = exp.(X * β)
+    A = inv(Symmetric(X' * (μ .* X)))
+    scores = (y .- μ) .* X
+    Sg = zeros(maximum(clustid), k)
+    @inbounds for i in eachindex(clustid), j in 1:k
+        Sg[clustid[i], j] += scores[i, j]
     end
-    clustshare ./= n
-    return crve_percomponent(R, A, Sg, clustshare)
+    cm, ss, _ = smallsample_factors(small, size(Sg, 1), length(clustid))
+    V = (cm / ss) .* (A * (Sg' * Sg) * A)
+    return sqrt.(max.(diag(V), 0.0))
+
+end
+
+# Which unrestricted coefficients get an `se_wald_<term>` column: the
+# genotype terms only (`G` and every `G & <context>`); nuisance covariates
+# and context main effects are reported as estimates without SEs.
+is_genotype_term(name::AbstractString) = name == "G" || startswith(name, "G & ")
+
+# Wide one-row DataFrame of SE columns named `se_wald_<coefname>` (see `crve_se`)
+# for the genotype terms, column-aligned with the coefficient columns.
+function se_frame(se::AbstractVector, names)
+    keep = findall(is_genotype_term, String.(names))
+    DataFrame(transpose(se[keep]), "se_wald_" .* String.(names)[keep])
+end
+
+function crve_percomponent(R::AbstractMatrix, A::AbstractMatrix;
+                           scores::AbstractMatrix, clustid::AbstractVector{<:Integer},
+                           small::Bool = false)
+
+    Sg, clustshare = _cluster_score_sums(scores, clustid)
+    return crve_percomponent(R, A, Sg, clustshare; small = small, nobs = length(clustid))
 
 end

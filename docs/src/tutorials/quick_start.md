@@ -198,13 +198,16 @@ One row per cis variant, with these columns:
 
 - `variant` -- variant identifier, as given in the VCF.
 - `chr`, `pos` -- the variant's chromosome and position, copied from the VCF.
-- `z` *or* `χ²` -- the cluster-robust score statistic. Tests of a single
-  term (`--effect main`, or `interaction` with one context) report a signed
-  `z`. Joint tests (`interaction`with 2+ contexts, `total`) report a `χ²` 
-  with as many degrees of freedom as tested terms.
+- `z`, `t`, `χ²` *or* `F` -- the cluster-robust score statistic. Tests of a
+  single term (`--effect main`, or `interaction` with one context) report a
+  signed `z`. Joint tests (`interaction` with 2+ contexts, `total`) report a
+  `χ²` with as many degrees of freedom as tested terms. With `--small` (see
+  below) these become `t` and `F` respectively.
 - `p` -- the analytical *p*-value of the score test with cluster-robust
   (donor-level) variance: two-sided normal for `z`, upper-tail χ² for
-  joint tests. 
+  joint tests; with `--small`, two-sided Student's *t* with *G* − 1 degrees
+  of freedom for `t` and an upper-tail F with (*q*, *G* − 1) degrees of
+  freedom for `F` (*G* = number of donors, *q* = number of tested terms).
 - `p_<context>` (e.g. `p_CV1`, `p_CV2`, ...) -- only for multi-context
   interaction tests (on by default; `--per-context false` to omit):
   per-context 1-df *p*-values decomposing the joint statistic, computed
@@ -226,6 +229,68 @@ One row per cis variant, with these columns:
   analytical `p`, including exact ties -- is filled and all other rows are
   `missing`; `--betas all` fits every variant (slower); `--betas none`
   omits the columns entirely.
+- Standard-error columns -- one `se_wald_<term>` column per *genotype*
+  effect-size column (`se_wald_G`, `se_wald_G & <context>`; covariate and
+  context main-effect coefficients carry no SE), filled for exactly the same rows. Each
+  is the one-way cluster-robust (CRVE, donor-clustered) standard error of the
+  corresponding coefficient, computed as a sandwich estimator at the
+  unrestricted fit, on the same natural-log scale as the estimate. So
+  `estimate / se` is a Wald *z*-statistic (a *t* on *G* − 1 df with
+  `--small`), and `estimate ± 1.96 × se` an approximate 95% confidence
+  interval (use the *t* quantile with `--small`). Two things to keep in mind:
+  - These are **not** the quantities behind `z`/`t` and `p`. Those come from
+    a score test at the *null* fit, so `|estimate| / se` will generally
+    differ from `|z|` (closely for small effects; more for large effects,
+    rare variants, or few donors). The score-test `p` (or `p_boot`) remains
+    the primary inference.
+  - Without `--small` no small-sample correction is applied (consistent with
+    the score test), so SEs are optimistic with few donors. With `--small`
+    the variance carries the same `G/(G−1)` factor as the score test. Under
+    multiway clustering (Julia API only) the SE columns are `NaN`.
+
+!!! note "Inference vs. effect size: which columns to use"
+    Use `z` (or `χ²`) and `p` for **inference** -- deciding whether an
+    association exists. They come from the score test evaluated at the null
+    fit with donor-clustered variance, which is the statistic whose
+    calibration Dynema guarantees, and it is computed for every variant.
+
+    Use `G`, `G & <context>` and their `se_wald_*` columns for **describing
+    the effect** -- its size, direction and uncertainty in tables, confidence
+    intervals and forest plots. These come from refitting the full model at
+    the lead variant(s), so the estimate is the exact maximum-likelihood
+    value and the SE is the cluster-robust sandwich evaluated at β̂.
+
+    The two are asymptotically equivalent under the null but will not agree
+    exactly: `G / se_wald_G` is a Wald statistic and differs from the score
+    `z`, increasingly so for larger effects. Do not derive a second p-value
+    from the Wald ratio -- report the score-test `p` and the Wald-type
+    `G ± se_wald_G`. Dynema deliberately writes no first-order (one-step,
+    null-fit) effect-size approximation: every estimate and SE in the output
+    comes from the exact unrestricted refit.
+
+### Small-sample correction (`--small`)
+
+By default *Dynema* uses the asymptotic reference distributions (normal / χ²)
+with the plain cluster-robust variance. With few donors this is
+anti-conservative, so `dynema-map --small` (default: off) switches **all**
+analytical and bootstrap results to the small-sample versions, mirroring
+[WildBootTests.jl](https://github.com/droodman/WildBootTests.jl)'s
+`small = true`:
+
+| | single-term test (1 df) | joint test (*q* df) |
+|---|---|---|
+| default | `z`, normal | `χ²`, χ²(*q*) |
+| `--small` | `t`, Student's *t* (*G* − 1 df) | `F`, F(*q*, *G* − 1) |
+
+With `--small`, the cluster-robust variance is inflated by *G*/(*G* − 1)
+(*G* = number of donors), the statistic is rescaled by a factor *n*/(*n* − 1)
+(*n* = number of cells; essentially 1 for single-cell data), the score
+bootstrap uses the same corrected statistic, and every standard error
+(`se_wald_<term>`) carries the same factor. Because bootstrap
+*p*-values compare the observed statistic with a bootstrap distribution
+rescaled identically, the empirical `p_boot` is unchanged by the rescaling
+itself, while `p_boot_approx` maps statistics to nominal *p*-values with the
+*t*/F reference.
 
 ### The batch summary (`<out>_summary.tsv`)
 
@@ -242,11 +307,17 @@ to scan for a study's top associations:
 - `n_variants` -- number of cis variants tested.
 - `lead_variant`, `lead_pos` -- the variant with the smallest analytical
   `p` for this gene × effect.
-- `stat_type`, `lead_stat` -- which statistic the effect uses (`z` or
-  `χ²`) and its value at the lead variant.
+- `stat_type`, `lead_stat` -- which statistic the effect uses (`z`, `t`,
+  `χ²` or `F`; the latter two joint) and its value at the lead variant.
 - `lead_p` -- the lead variant's analytical *p*-value.
 - `lead_p_boot`, `lead_p_boot_approx` -- the lead variant's bootstrap
   *p*-values (empty unless the run used `--boot`).
+- `lead_G`, `lead_se_wald_G` -- the lead variant's genotype main-effect
+  estimate and its Wald CRVE standard error (from the per-variant table's
+  `G` / `se_wald_G`). For interaction tests, also `lead_G & <context>` and
+  `lead_se_wald_G & <context>` for every tested context. Columns that do not
+  apply to an effect (e.g. interaction terms on a `main` row) are empty, as
+  are all of them with `--betas none`.
 - `out_file` -- path to the gene's per-variant table, for drill-down.
 
 

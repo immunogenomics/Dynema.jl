@@ -1,6 +1,6 @@
 name = "Dynema"
 uuid = "bc27e32f-14b0-4d32-98d5-b88f38cd41e7"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Jose Alquicira-Hernandez"]
 
 [workspace]

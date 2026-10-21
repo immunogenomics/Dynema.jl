@@ -64,7 +64,8 @@ get_summary(m::DynemaModel) = m.summary
 `get_stat(::Dynema.DynemaModel)`
 
 Extract the test statistic for every variant (the summary column named by
-[`get_stattype`](@ref): `z` for a single tested term, `χ²` for a joint test)
+[`get_stattype`](@ref): `z` (`t` with `small = true`) for a single tested
+term, `χ²` (`F` with `small = true`) for a joint test)
 """
 get_stat(m::DynemaModel) = m.summary[:, get_stattype(m)]
 
@@ -108,7 +109,8 @@ get_time(m::DynemaModel) = m.time
 """
 `get_stattype(::Dynema.DynemaModel)`
 
-Extract statistic type (z or χ²)
+Extract statistic type: `z` or `χ²` (default), or `t` or `F` when the small-sample
+correction (`small = true`) is used
 """
 get_stattype(m::DynemaModel) = m.stattype
 
@@ -226,14 +228,14 @@ function Base.show(io::IO, ::MIME"text/plain", m::DynemaModel)
 
     summ = get_summary(m)
 
-    if nrow(summ) >= 10
+    # Preview rows always sorted by ascending p (ties broken by |statistic|,
+    # largest first); only the top 10 are shown when there are more.
+    glance = sort(summ, [order(:p), order(get_stattype(m), by = abs, rev = true)])
 
-        glance = first(sort(summ, [order(:p), order(get_stattype(m), by = abs, rev = true)]), 10)
+    if nrow(glance) > 10
+
+        glance = first(glance, 10)
         push!(glance, fill("...", ncol(summ)), promote = true)
-
-    else
-
-        glance = summ
 
     end
 
@@ -249,16 +251,24 @@ function Base.show(io::IO, ::MIME"text/plain", m::DynemaModel)
     # `percontext`) are part of the test's result, so they belong in the
     # preview alongside the joint p.
     pc_cols = filter(c -> startswith(c, "p_") && c ∉ ("p_boot", "p_boot_approx"), names(glance))
+    # The genotype main-effect estimate `G` (from the lead-variant refit, when
+    # `betas` is on) is shown alongside the tested interaction terms too, so
+    # an interaction/total preview reads as "main effect + its modulation"
+    # without opening the full table. For a main-effect test `G` is already
+    # a tested term.
+    # Preview = inference (stat, p, per-context p, bootstrap p) + exact
+    # estimates (`G`, tested terms); the `se_wald_<term>` SEs stay in the
+    # full table only.
     key_cols = filter(c -> c in names(glance),
                       unique(vcat(["variant", get_stattype(m), "p"], pc_cols,
-                                  ["p_boot", "p_boot_approx"], tt_cols)))
+                                  ["p_boot", "p_boot_approx"], ["G"], tt_cols)))
 
     if length(key_cols) < ncol(glance)
 
         n_hidden = ncol(glance) - length(key_cols)
         shown = glance[:, key_cols]
         println(io, Crayon(reset = true), "\nResults (variant/stat/p/tested term(s); ",
-                "$n_hidden more column(s) -- covariates, untested contexts -- in the full results/--out file)")
+                "$n_hidden more column(s) -- coefficients and standard errors -- in the full results/--out file)")
         pretty_table(io, shown, header = (names(shown)))
 
     else

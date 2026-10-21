@@ -47,7 +47,17 @@ it is fit only once and reused across all variants.
 - `betas`: Which variants get unrestricted-model coefficient estimates attached as extra summary columns (they are not
 needed for the score test itself): `:lead` (default) fits only the lead variant(s) -- smallest analytical p-value,
 including exact ties -- leaving the estimate columns `missing` for all other variants; `:all` fits every variant
-(slowest); `:none` skips estimates entirely (fastest)
+(slowest); `:none` skips estimates entirely (fastest). Each genotype estimate column (`G` and every
+`G & context`) is accompanied by an `se_wald_<term>` column: the one-way cluster-robust (CRVE) standard error of that
+coefficient at the unrestricted fit (see [`crve_se`](@ref)); covariate and context main-effect coefficients are
+written without SEs. Estimates and SEs are on the natural-log scale and give a
+Wald z = estimate / SE (t on `G - 1` df with `small = true`). They are distinct from the score-test `z`/`t` and `p`,
+which are computed at the null fit, so |estimate| / SE generally differs from |z|; the score-test `p` (or `p_boot`)
+remains the primary inference. SEs carry a small-sample correction only with `small = true`, and are `NaN` under
+multiway clustering. Covariate/context names in the formula must not coincide with the summary columns Dynema writes
+(`variant`, `chr`, `pos`, `z`, `t`, `χ²`, `F`, `p`, `p_boot`, `p_boot_approx`, `p_<context>`, or the
+`se_wald_<term>` of another term): `map_locus` stops with an error naming the offending column(s) -- rename them in the
+metadata
 - `boot`: Apply score bootstrapping? If false, analytical p-values using a CRVE are returned. Bootstrapping
 requires the optional WildBootTests package (`Pkg.add("WildBootTests"); using WildBootTests` alongside `using Dynema`)
 - `B``: Number of bootstrap iterations to apply. By default 39999 iterations at apply to achieve a p-value of 5 x 10^-5 for a two-tail test. 
@@ -65,6 +75,24 @@ restricted fit and CRVE covariance as the joint test (see [`crve_percomponent`](
 They decompose the joint statistic; exact under the joint null, but with correlated contexts a true effect in one
 context can partially project onto another's test, so the joint p-value remains the primary inference. Ignored for
 main/total effect tests (shared null) and single-context interactions. Default `true`
+- `small`: Apply the small-sample correction of `WildBootTests.jl`'s `small = true` to *all* analytical and bootstrap
+results. Default `false` (normal/χ² reference, no correction). With `small = true`: the cluster-robust denominator is
+multiplied by `G/(G-1)` (`G` = number of donors/clusters), the statistic is rescaled by the `nobs/(nobs-1)` factor
+(see [`smallsample_factors`](@ref)), and the reference distribution becomes Student's t with `G-1` df for a single
+tested term (summary column `t` instead of `z`) or F with `(q, G-1)` df for a joint test of `q` terms (column `F`
+instead of `χ²`). The bootstrap uses the same corrected statistic (`p_boot` is unchanged by this rescaling, being
+rank-based; `p_boot_approx` uses the t/F reference), and all standard errors below are on the same footing.
+Multiway clustering is handled by the WildBootTests implementation (needs the optional
+package) and has no score-based or Wald SEs (`NaN`).
+
+# Standard errors
+
+Inference comes from the score test (`z`/`t`/`χ²`/`F` and `p`, evaluated at the restricted fit). Effect sizes come
+only from the unrestricted refit selected with `betas`: the genotype coefficient columns (`G`, `G & context`) are
+accompanied by `se_wald_<term>` columns, the Wald-type CRVE standard error at the unrestricted fit (see
+[`crve_se`](@ref)); covariate coefficients are written without SEs. `G / se_wald_G` is a Wald statistic and will not reproduce the score-test `z`; report the
+score-test `p` for inference and `G ± se_wald_G` for the effect. No one-step (null-fit) estimate or SE is written.
+Joint (multi-term) tests have no single SE; their per-context p-values are `p_<context>`.
 """
 function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMatrix, AbstractVector}, 
                     meta::AbstractDataFrame, groups::Union{AbstractDataFrame, AbstractVector}, termtest::Union{String, Vector{String}}, 
@@ -77,7 +105,8 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
                     pos::Union{Nothing, Vector{Int64}, Vector{Float64}} = nothing,
                     gene::Union{Nothing, String} = nothing,
                     chr::Union{Nothing, String, Int} = nothing,
-                    percontext::Bool = true)
+                    percontext::Bool = true,
+                    small::Bool = false)
 
     # ------------------------------- Betas mode -------------------------------- #
 
@@ -146,6 +175,12 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
 
     groups = Matrix(groups)
 
+    # The small-sample correction needs at least 2 clusters (G/(G-1), t on
+    # G-1 df). Fail loudly here instead of letting every variant fail (and be
+    # silently dropped with a warning) inside the per-variant try/catch.
+    small && any(j -> length(unique(groups[:, j])) < 2, 1:size(groups, 2)) &&
+        throw(ArgumentError("small = true needs at least 2 clusters (donors) in every grouping variable"))
+
     # ------------------------------- Add phenotype ------------------------------ #
 
     design[!, :E] = pheno
@@ -175,6 +210,10 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
                size(groups, 2) == 1) ?
         ["p_" * replace(replace(t, r"^G\s*&\s*" => ""), r"[ &]+" => "_")
          for t in termtest] : nothing
+
+    # Stop early, with a clear message, if a covariate/context name would
+    # collide with a column Dynema writes (e.g. a covariate called `pos`).
+    check_reserved_columns(terms, pcnames)
     # Only the fitted values and coefficients of the shared null are needed
     # downstream -- extracted here so the (large) fitted model object never
     # has to be serialized to parallel workers.
@@ -225,7 +264,7 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
             map_chunk(idxs; f = f, design = design, μ̂0 = μ̂0, beta0 = beta0, v0 = v0,
                       groups = groups, geno = geno, R = R, r = r, boot = boot, B = B,
                       ptype = ptype, rboot = rboot, betas = betamode == :all,
-                      pcnames = pcnames)
+                      pcnames = pcnames, small = small)
         end
         reduce(vcat, chunk_results)
 
@@ -244,7 +283,7 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
             chunk_results[ci] = map_chunk(chunks[ci]; f = f, design = design, μ̂0 = μ̂0,
                       beta0 = beta0, v0 = v0, groups = groups, geno = geno, R = R, r = r,
                       boot = boot, B = B, ptype = ptype, rboot = rboot,
-                      betas = betamode == :all, pcnames = pcnames)
+                      betas = betamode == :all, pcnames = pcnames, small = small)
         end
         reduce(vcat, chunk_results)
 
@@ -253,7 +292,8 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
 
             safe_map_variant_shared(ws, geno[:, i]; groups = groups,
                     R = R, r = r, boot = boot, B = B, ptype = ptype, rboot = rboot,
-                    rng = StableRNG(1322), betas = betamode == :all, pcnames = pcnames)
+                    rng = StableRNG(1322), betas = betamode == :all, pcnames = pcnames,
+                    small = small)
         end
 
     else
@@ -261,7 +301,8 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
 
             safe_map_variant(geno[:, i]; f = f,  d = design, groups = groups, R = R, r = r,
                     boot = boot, B = B, ptype = ptype, rboot = rboot, rng = StableRNG(1322),
-                    μ̂0 = μ̂0, beta0 = beta0, betas = betamode == :all, pcnames = pcnames)
+                    μ̂0 = μ̂0, beta0 = beta0, betas = betamode == :all, pcnames = pcnames,
+                    small = small)
         end
 
     end
@@ -305,7 +346,7 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
         lead_fits = map(lead_rows) do i
             design[!, :G] = Float64.(geno[:, kept_idx[i]])
             m = glm(f, design, Poisson(), LogLink())
-            (coefnames(m), coef(m))
+            (coefnames(m), coef(m), crve_se(modelmatrix(m), response(m), coef(m), groups; small = small))
         end
         cnames = lead_fits[1][1]
         for (ci, cn) in enumerate(cnames)
@@ -314,6 +355,19 @@ function map_locus(f::FormulaTerm; pheno::AbstractVector, geno::Union{AbstractMa
                 col[i] = lead_fits[l][2][ci]
             end
             summ_stats[!, cn] = col
+        end
+        # `se_wald_<term>` columns: one-way CRVE standard errors of the unrestricted
+        # genotype coefficients (`G`, `G & <context>`; sandwich at the
+        # unrestricted fit, see `crve_se`, which also applies the `small`
+        # factors). Same lead-only filling as the estimates; Wald-type, so
+        # distinct from the null-fit score-test statistic in `z`/`t` and `p`.
+        for (ci, cn) in enumerate(cnames)
+            is_genotype_term(cn) || continue
+            col = Vector{Union{Missing, Float64}}(missing, nrow(summ_stats))
+            for (l, i) in enumerate(lead_rows)
+                col[i] = lead_fits[l][3][ci]
+            end
+            summ_stats[!, "se_wald_" * cn] = col
         end
     end
     
@@ -339,7 +393,8 @@ function map_variant(variant::AbstractVector; f::FormulaTerm, d::AbstractDataFra
                     B::Vector{Int64} = [200, 200, 1600, 2000, 16000, 20000],
                     ptype::Symbol = :equaltail, rboot = true, rng::AbstractRNG = StableRNG(66),
                     μ̂0 = nothing, beta0 = nothing, betas::Bool = true,
-                    pcnames::Union{Nothing, Vector{String}} = nothing)
+                    pcnames::Union{Nothing, Vector{String}} = nothing,
+                    small::Bool = false)
 
         # ------------- Add expression and genotype data to model matrix ------------- #
 
@@ -393,10 +448,14 @@ function map_variant(variant::AbstractVector; f::FormulaTerm, d::AbstractDataFra
         # -------------------------- Calculate CRVE p-value -------------------------- #
 
         p_analytical_res = crvetest(R, r; resp = y, scores = scores, betas = betas_vec,
-                    A = A, clustid = groups)
+                    A = A, clustid = groups, small = small)
 
         res = DataFrame(p_analytical_res.stattype => p_analytical_res.stat)
         res[!, :p] = [p_analytical_res.p]
+
+        # (No one-step `beta`/`se` output: effect sizes are reported only from
+        # the unrestricted refit -- the `G`/`G & context` estimates and their
+        # `se_wald_<term>` sandwich SEs at β̂ -- never from the null fit.)
 
         # -------------------- Per-context 1-df p-values (if enabled) ----------------- #
 
@@ -404,7 +463,7 @@ function map_variant(variant::AbstractVector; f::FormulaTerm, d::AbstractDataFra
         # column of `groups` is the (only) integer cluster coding.
         if pcnames !== nothing
             pk = crve_percomponent(R, A; scores = scores,
-                                   clustid = Int.(vec(groups[:, 1])))
+                                   clustid = Int.(vec(groups[:, 1])), small = small)
             for (nm, pv) in zip(pcnames, pk)
                 res[!, nm] = [pv]
             end
@@ -414,7 +473,7 @@ function map_variant(variant::AbstractVector; f::FormulaTerm, d::AbstractDataFra
 
         if boot
             pboot, pbeta, bootdist = scorebootstrap(R, r; resp = y, scores = scores, betas = betas_vec,
-                        A = A, clustid = groups,
+                        A = A, clustid = groups, small = small,
                         rng = rng, ptype = ptype, B = B)
             res[!, :p_boot] = [pboot]
             res[!, :p_boot_approx] = [pbeta]
@@ -424,7 +483,8 @@ function map_variant(variant::AbstractVector; f::FormulaTerm, d::AbstractDataFra
         # ------------------- Extract betas from unrestricted model ------------------ #
 
         if betas
-            res = hcat(res, DataFrame(transpose(coef(m)), coefnames(m)))
+            res = hcat(res, DataFrame(transpose(coef(m)), coefnames(m)),
+                       se_frame(crve_se(X, y, coef(m), groups; small = small), coefnames(m)))
         end
 
         # ---------------- Return bootstrap distributions if required ---------------- #
@@ -745,6 +805,20 @@ function irls_poisson!(β::Vector{Float64}, X::AbstractMatrix{Float64}, y::Vecto
 
 end
 
+# Accumulate per-cluster score sums `ws.Sg` (G × k) for the given columns of
+# `ws.scores`, from the one-way cluster codes in `ws.clustid`.
+function accumulate_scores!(ws::LocusWorkspace, cols)
+    @inbounds for j in cols
+        Sgj = view(ws.Sg, :, j)
+        fill!(Sgj, 0.0)
+        scj = view(ws.scores, :, j)
+        for i in eachindex(ws.clustid)
+            Sgj[ws.clustid[i]] += scj[i]
+        end
+    end
+    return ws.Sg
+end
+
 """
     map_variant_shared(ws, variant; ...)
 
@@ -762,7 +836,8 @@ function map_variant_shared(ws::LocusWorkspace, variant::AbstractVector;
                     groups::Matrix, R::BitMatrix, r::Vector{Float64},
                     boot::Bool, B::Vector{Int64}, ptype::Symbol, rboot::Bool,
                     rng::AbstractRNG, betas::Bool,
-                    pcnames::Union{Nothing, Vector{String}} = nothing)
+                    pcnames::Union{Nothing, Vector{String}} = nothing,
+                    small::Bool = false)
 
         # ---------------- Patch genotype columns of X in place ----------------------- #
 
@@ -844,30 +919,24 @@ function map_variant_shared(ws::LocusWorkspace, variant::AbstractVector;
             # columns change (fixed columns were precomputed at build time);
             # with a per-variant null the residuals changed, so all columns
             # are re-accumulated.
-            updatecols = ws.shared ? ws.gcols : collect(1:size(ws.Sg, 2))
-            @inbounds for j in updatecols
-                Sgj = view(ws.Sg, :, j)
-                fill!(Sgj, 0.0)
-                scj = view(ws.scores, :, j)
-                for i in eachindex(ws.clustid)
-                    Sgj[ws.clustid[i]] += scj[i]
-                end
-            end
-            direct = crvetest_direct(R, A, ws.Sg, ws.clustshare)
+            accumulate_scores!(ws, ws.shared ? ws.gcols : collect(1:size(ws.Sg, 2)))
+            direct = crvetest_direct(R, A, ws.Sg, ws.clustshare;
+                                     small = small, nobs = length(ws.clustid))
             if !ws.checked[]
                 # One-time self-check of the direct statistic/p-value against
-                # the WildBootTests implementation, on the first variant --
-                # skipped when the optional WildBootTests package isn't
-                # installed (the direct implementation is then trusted
-                # as-is).
+                # the WildBootTests implementation (with the same `small`
+                # setting), on the first variant -- skipped when the optional
+                # WildBootTests package isn't installed (the direct
+                # implementation is then trusted as-is).
                 ws.checked[] = true
                 if HAS_WILDBOOTTESTS[]
                     ref = crvetest(R, r; resp = ws.y, scores = ws.scores, betas = ws.betas0,
-                                A = A, clustid = groups)
+                                A = A, clustid = groups, small = small)
                     if !(isapprox(ref.stat, direct.stat; rtol = 1e-8) &&
                          isapprox(ref.p, direct.p; rtol = 1e-6))
                         @warn "Direct CRVE score test failed its self-check against WildBootTests " *
-                              "(stat $(direct.stat) vs $(ref.stat)); falling back to the library implementation"
+                              "(small = $small; stat $(direct.stat) vs $(ref.stat)); " *
+                              "falling back to the library implementation"
                         ws.direct[] = false
                         direct = (stat = ref.stat, p = ref.p, stattype = ref.stattype)
                     end
@@ -876,11 +945,13 @@ function map_variant_shared(ws::LocusWorkspace, variant::AbstractVector;
             direct
         else
             crvetest(R, r; resp = ws.y, scores = ws.scores, betas = ws.betas0,
-                        A = A, clustid = groups)
+                        A = A, clustid = groups, small = small)
         end
 
         res = DataFrame(p_analytical_res.stattype => p_analytical_res.stat)
         res[!, :p] = [p_analytical_res.p]
+
+        # (No one-step `beta`/`se` output -- see the generic path above.)
 
         # -------------------- Per-context 1-df p-values (if enabled) ----------------- #
 
@@ -888,18 +959,12 @@ function map_variant_shared(ws::LocusWorkspace, variant::AbstractVector;
             # The direct statistic already carries the per-component p-values
             # (same numer/denom); on the library-fallback path they are
             # recomputed from freshly accumulated per-cluster score sums.
-            pk = if haskey(p_analytical_res, :pk)
+            pk = if p_analytical_res isa NamedTuple && haskey(p_analytical_res, :pk)
                 p_analytical_res.pk
             else
-                @inbounds for j in 1:size(ws.Sg, 2)
-                    Sgj = view(ws.Sg, :, j)
-                    fill!(Sgj, 0.0)
-                    scj = view(ws.scores, :, j)
-                    for i in eachindex(ws.clustid)
-                        Sgj[ws.clustid[i]] += scj[i]
-                    end
-                end
-                crve_percomponent(R, A, ws.Sg, ws.clustshare)
+                accumulate_scores!(ws, 1:size(ws.Sg, 2))
+                crve_percomponent(R, A, ws.Sg, ws.clustshare;
+                                  small = small, nobs = length(ws.clustid))
             end
             for (nm, pv) in zip(pcnames, pk)
                 res[!, nm] = [pv]
@@ -910,7 +975,7 @@ function map_variant_shared(ws::LocusWorkspace, variant::AbstractVector;
 
         if boot
             pboot, pbeta, bootdist = scorebootstrap(R, r; resp = ws.y, scores = ws.scores, betas = ws.betas0,
-                        A = A, clustid = groups,
+                        A = A, clustid = groups, small = small,
                         rng = rng, ptype = ptype, B = B)
             res[!, :p_boot] = [pboot]
             res[!, :p_boot_approx] = [pbeta]
@@ -945,7 +1010,8 @@ function map_variant_shared(ws::LocusWorkspace, variant::AbstractVector;
             end
             copyto!(ws.warm, βhat)
             ws.warmready[] = true
-            res = hcat(res, DataFrame(transpose(βhat), ws.coefnames))
+            res = hcat(res, DataFrame(transpose(βhat), ws.coefnames),
+                       se_frame(crve_se(ws.X, ws.y, βhat, groups; small = small), ws.coefnames))
         end
 
         # ---------------- Return bootstrap distributions if required ---------------- #
@@ -986,7 +1052,8 @@ function map_chunk(idxs::AbstractUnitRange; f::FormulaTerm, design::AbstractData
                    μ̂0, beta0, v0::AbstractVector{Bool}, groups::Matrix, geno,
                    R::BitMatrix, r::Vector{Float64}, boot::Bool, B::Vector{Int64},
                    ptype::Symbol, rboot::Bool, betas::Bool,
-                   pcnames::Union{Nothing, Vector{String}} = nothing)
+                   pcnames::Union{Nothing, Vector{String}} = nothing,
+                   small::Bool = false)
 
     ws = isempty(idxs) ? nothing :
         build_locus_workspace(f, design, μ̂0, beta0, v0, geno[:, first(idxs)], groups)
@@ -995,11 +1062,11 @@ function map_chunk(idxs::AbstractUnitRange; f::FormulaTerm, design::AbstractData
         if ws === nothing
             safe_map_variant(geno[:, i]; f = f, d = design, groups = groups, R = R, r = r,
                     boot = boot, B = B, ptype = ptype, rboot = rboot, rng = StableRNG(1322),
-                    μ̂0 = μ̂0, beta0 = beta0, betas = betas, pcnames = pcnames)
+                    μ̂0 = μ̂0, beta0 = beta0, betas = betas, pcnames = pcnames, small = small)
         else
             safe_map_variant_shared(ws, geno[:, i]; groups = groups, R = R, r = r,
                     boot = boot, B = B, ptype = ptype, rboot = rboot,
-                    rng = StableRNG(1322), betas = betas, pcnames = pcnames)
+                    rng = StableRNG(1322), betas = betas, pcnames = pcnames, small = small)
         end
     end
 

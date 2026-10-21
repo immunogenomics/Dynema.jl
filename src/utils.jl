@@ -36,6 +36,41 @@ function verify_nobs_map_locus(geno::AbstractMatrix, pheno::AbstractVector,
 end
 
 
+# Column names Dynema itself writes to the per-variant summary table (the
+# statistic column is named after its type, see `smallsample_factors`).
+# A model term (covariate/context) with one of these names would produce a
+# coefficient column of the same name, which either errors (duplicate column
+# names) or silently overwrites the Dynema column.
+const RESERVED_OUTPUT_COLUMNS =
+    ("variant", "chr", "pos", "z", "t", "χ²", "F", "p", "p_boot", "p_boot_approx")
+
+"""
+    check_reserved_columns(terms, pcnames = nothing)
+
+Stops with an `ArgumentError` naming the offending terms when a model term
+(covariate or context column of the formula) would collide with a column
+Dynema writes to the summary table: the fixed names in
+`RESERVED_OUTPUT_COLUMNS`, the per-context `p_<context>` columns (`pcnames`),
+or the `se_wald_<term>` column of another term (a term literally called
+`se_wald_x` next to a term `x`). The fix is to rename the column in the
+metadata.
+"""
+function check_reserved_columns(terms::AbstractVector, pcnames::Union{Nothing, AbstractVector} = nothing)
+    terms = String.(terms)
+    reserved = Set{String}(RESERVED_OUTPUT_COLUMNS)
+    pcnames === nothing || union!(reserved, String.(pcnames))
+    clash = sort(unique(filter(terms) do t
+        t in reserved ||
+            (startswith(t, "se_wald_") && t[length("se_wald_")+1:end] in terms)
+    end))
+    isempty(clash) && return nothing
+    throw(ArgumentError(
+        "model term(s) " * join(("\"$c\"" for c in clash), ", ") * " have the same name as output " *
+        "column(s) Dynema writes (reserved names: " * join(RESERVED_OUTPUT_COLUMNS, ", ") *
+        ", p_<context>, se_wald_<term>). Rename the column(s) in the metadata (--meta) and rerun."))
+end
+
+
 # Assume:
 # R is a BitVector (or any logical vector)
 # betas0 is a vector with length equal to count(!, R) (i.e., number of `false` in R)

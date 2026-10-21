@@ -196,6 +196,10 @@ function parse_commandline()
             help = "Comma-separated list of column names in --meta to include as additive covariates (e.g. age,sex,nUMI,percent_mito,gPC1,gPC2)."
             arg_type = String
             default = ""
+        "--scale-covariates"
+            help = "Standardize every numeric --covariates and --interaction-with (context) column to mean 0 and variance 1 before model fitting, computed over the cells in --meta. Genotype dosages and gene expression are never scaled. Non-numeric columns (categorical covariates such as sex, which the formula dummy-codes), boolean columns and constant columns are left as given and reported in the log. Centering the contexts makes the genotype main effect G the effect at the average cell state (rather than at context = 0), and scaling puts every G x context coefficient on a per-standard-deviation scale, so effect sizes are comparable across contexts and the GLM is better conditioned when contexts differ widely in scale. Default: true (pass '--scale-covariates false' to use the columns exactly as given in --meta)."
+            arg_type = Bool
+            default = true
         "--effect"
             help = "Effect(s) to test, comma-separated: any of 'main' (context-independent), 'interaction' (single- or multi-context), and 'total' (main + interaction jointly), e.g. 'main,interaction,total'. Always required -- no default or shortcut -- so what is being tested is always explicit. Multiple effects share each gene's data extraction and write separate output files, <out>_<effect>_<gene>.tsv. In a multi-effect run, 'main' uses the classic model without G x context terms; a standalone --effect main can still adjust for (untested) interactions via --interaction-with."
             arg_type = String
@@ -216,8 +220,11 @@ function parse_commandline()
             arg_type = String
             default = "equaltail"
             range_tester = x -> x in ("equaltail", "symmetric")
+        "--small"
+            help = "Apply a small-sample correction to ALL analytical and bootstrap results (default: off). With --small: the cluster-robust (donor-clustered) variance is inflated by G/(G-1) (G = number of donors), the statistic is rescaled accordingly, and p-values use Student's t with G-1 df for single-term tests (summary column 't' instead of 'z') or an F distribution with (q, G-1) df for joint tests (column 'F' instead of 'χ²'). Bootstrap statistics use the same correction (p_boot, being rank-based, is unaffected by the rescaling; p_boot_approx uses the t/F reference), and the reported standard errors (se, se_wald_<term>) include the same factor. Mirrors WildBootTests.jl's small = true. Recommended for cohorts with few donors."
+            action = :store_true
         "--betas"
-            help = "Which variants to fit the unrestricted model for, attaching per-variant effect-size estimates as extra output columns (the score test itself never needs them): 'lead' (default) fits only the lead variant(s) -- smallest analytical p-value, including all exactly tied variants -- leaving the estimate columns empty for the rest; 'all' fits every variant (substantially slower); 'none' skips estimates entirely (fastest)."
+            help = "Which variants to fit the unrestricted model for, attaching per-variant effect-size estimates as extra output columns (the score test itself never needs them): 'lead' (default) fits only the lead variant(s) -- smallest analytical p-value, including all exactly tied variants -- leaving the estimate columns empty for the rest; 'all' fits every variant (substantially slower); 'none' skips estimates entirely (fastest). Each estimate column also gets an se_wald_<term> column with its cluster-robust (CRVE) standard error at the unrestricted fit (a Wald-type SE, distinct from the null-fit score test behind z/t and p; small-sample corrected only with --small). Independently of --betas, every single-term test (main effect G, or a single-context interaction G & context) reports beta and se for every variant: the one-step estimate and CRVE SE from the null fit, with beta / se equal to the reported z (t with --small)."
             arg_type = String
             default = "lead"
             range_tester = x -> x in ("all", "none", "lead")
@@ -260,6 +267,48 @@ splitcsv(x::Nothing) = String[]
 splitcsv(x::AbstractString) = isempty(strip(x)) ? String[] : String.(strip.(split(x, ",")))
 
 readtable(path::AbstractString) = CSV.read(path, DataFrame)
+
+"""
+    scale_columns!(df, cols) -> (scaled, skipped)
+
+Standardizes each numeric column in `cols` of `df` in place to mean 0 and
+variance 1 (sample standard deviation, computed over the non-missing rows;
+`missing` entries are preserved). Implements `--scale-covariates`: applies to
+--covariates and --interaction-with (context) columns only -- genotype dosages
+and gene expression are never touched.
+
+Columns are left as they are, and reported in `skipped` as `(name, reason)`,
+when they are non-numeric (categorical covariates such as sex are dummy-coded
+by the formula machinery and must keep their labels), boolean, or constant
+(standardizing would divide by zero; a constant covariate is redundant with
+the intercept anyway).
+"""
+function scale_columns!(df::DataFrame, cols::Vector{String})
+    scaled, skipped = String[], Tuple{String, String}[]
+    for c in cols
+        x = df[!, c]
+        T = nonmissingtype(eltype(x))
+        if !(T <: Real) || T <: Bool
+            push!(skipped, (c, "non-numeric"))
+            continue
+        end
+        obs = collect(skipmissing(x))
+        n = length(obs)
+        if n < 2
+            push!(skipped, (c, "fewer than 2 observed values"))
+            continue
+        end
+        m = sum(obs) / n
+        s = sqrt(sum(abs2, obs .- m) / (n - 1))
+        if !(isfinite(s) && s > 0)
+            push!(skipped, (c, "constant"))
+            continue
+        end
+        df[!, c] = [ismissing(v) ? missing : (Float64(v) - m) / s for v in x]
+        push!(scaled, c)
+    end
+    return scaled, skipped
+end
 
 """
     resolve_interactions(effect, interaction_with_arg) -> Vector{String}
@@ -426,6 +475,22 @@ function run_map(args; term_size = displaysize(stdout))
     bullet("found $(nrow(meta)) cell(s)")
     bullet("found $(length(unique(meta[:, donor_col]))) donor(s)")
 
+    # --scale-covariates: standardize numeric covariates and contexts over the
+    # analysis cells (every --meta row is a modelled cell -- expression is
+    # aligned to --meta below, never the other way round). Done once here so
+    # every gene and effect in the batch sees identical, consistently scaled
+    # columns; G and the expression counts are never touched.
+    scale_cols = unique(vcat(covariates, all_iw))
+    if args["scale-covariates"] && !isempty(scale_cols)
+        scaled, skipped = scale_columns!(meta, scale_cols)
+        bullet("scaled to mean 0, variance 1: $(isempty(scaled) ? "none" : join(scaled, ", "))")
+        for (c, why) in skipped
+            bullet("not scaled ($why): $c", indent = 2)
+        end
+    elseif !isempty(scale_cols)
+        bullet("covariates/contexts used as given (--scale-covariates false)")
+    end
+
     # --------------------- Batch-shared inputs, read once --------------------- #
 
     mtx, features, barcodes = resolve_mtx_triplet(args["expr-prefix"])
@@ -529,13 +594,44 @@ function run_map(args; term_size = displaysize(stdout))
     # Summary row for a gene x effect skipped via --skip-existing: lead
     # statistics are re-read from the existing output so a resumed batch still
     # produces a complete summary table.
+
+    # Lead-variant effect sizes for the batch summary: the genotype main effect
+    # `G` and every `G & <context>` coefficient present in a per-gene table,
+    # each with its Wald CRVE SE (`se_wald_<term>`), as `lead_<term>` /
+    # `lead_se_wald_<term>` columns. Empty when the run used --betas none.
+    # Effects differ in which terms exist, so the union of columns is taken
+    # when the summary frame is assembled (see summary_frame).
+    function lead_estimates(df, li)
+        terms = filter(t -> t == "G" || startswith(t, "G & "), names(df))
+        pairs = Pair{Symbol, Any}[]
+        for t in terms
+            push!(pairs, Symbol("lead_" * t) => df[li, t])
+            se = "se_wald_" * t
+            push!(pairs, Symbol("lead_" * se) => (se in names(df) ? df[li, se] : missing))
+        end
+        return (; pairs...)
+    end
+
+    # Rows carry different key sets (effects with different tested terms;
+    # failed/skipped rows with none): union the columns, fill with missing,
+    # and keep the fixed summary columns first (ordered by first appearance).
+    function summary_frame(rows)
+        cols = Symbol[]
+        for r in rows, k in keys(r)
+            k in cols || push!(cols, k)
+        end
+        # out_file last for readability
+        cols = vcat(filter(!=(:out_file), cols), filter(==(:out_file), cols))
+        DataFrame([c => [haskey(r, c) ? r[c] : missing for r in rows] for c in cols])
+    end
+
     function skipped_row(glabel, g, effect, path)
         base = (gene = glabel, effect = effect, status = "skipped",
                 chr = g.chr, tss = g.tss)
         try
             df = readtable(path)
             li = argmin(df.p)
-            statcol_i = findfirst(c -> c in ("z", "χ²"), names(df))
+            statcol_i = findfirst(c -> c in ("z", "t", "χ²", "F"), names(df))
             statcol = statcol_i === nothing ? nothing : names(df)[statcol_i]
             return merge(base, (n_variants = nrow(df),
                 lead_variant = df.variant[li],
@@ -544,8 +640,8 @@ function run_map(args; term_size = displaysize(stdout))
                 lead_stat = statcol === nothing ? missing : df[li, statcol],
                 lead_p = df.p[li],
                 lead_p_boot = "p_boot" in names(df) ? df.p_boot[li] : missing,
-                lead_p_boot_approx = "p_boot_approx" in names(df) ? df.p_boot_approx[li] : missing,
-                out_file = path))
+                lead_p_boot_approx = "p_boot_approx" in names(df) ? df.p_boot_approx[li] : missing),
+                lead_estimates(df, li), (out_file = path,))
         catch
             return merge(base, (n_variants = missing, lead_variant = missing, lead_pos = missing,
                 stat_type = missing, lead_stat = missing, lead_p = missing,
@@ -681,6 +777,7 @@ function run_map(args; term_size = displaysize(stdout))
                     gene = gene_label,
                     chr = g.chr,
                     percontext = args["per-context"],
+                    small = args["small"],
                 )
                 gene_pos === nothing || set_pos!(res, gene_pos)
 
@@ -701,7 +798,7 @@ function run_map(args; term_size = displaysize(stdout))
                 # One summary row per gene x effect, for the batch summary table.
                 li = argmin(summ.p)
                 statcol = get_stattype(res)
-                push!(rows, (gene = gene_label,
+                push!(rows, merge((gene = gene_label,
                     effect = mdl.effect,
                     status = "ok",
                     chr = g.chr,
@@ -713,8 +810,8 @@ function run_map(args; term_size = displaysize(stdout))
                     lead_stat = summ[li, statcol],
                     lead_p = summ.p[li],
                     lead_p_boot = "p_boot" in names(summ) ? summ.p_boot[li] : missing,
-                    lead_p_boot_approx = "p_boot_approx" in names(summ) ? summ.p_boot_approx[li] : missing,
-                    out_file = outpath))
+                    lead_p_boot_approx = "p_boot_approx" in names(summ) ? summ.p_boot_approx[li] : missing),
+                    lead_estimates(summ, li), (out_file = outpath,)))
             catch err
                 # Single gene + single effect: fail loudly (rethrown again by
                 # the batch loop); otherwise one failed effect must not sink
@@ -776,7 +873,7 @@ function run_map(args; term_size = displaysize(stdout))
     # inspected without parsing every per-gene table.
     summary_path = isempty(out_prefix) ? "dynema_summary.tsv" :
         endswith(out_prefix, "/") ? out_prefix * "summary.tsv" : out_prefix * "_summary.tsv"
-    CSV.write(summary_path, DataFrame(gene_rows); delim = '\t')
+    CSV.write(summary_path, summary_frame(gene_rows); delim = '\t')
 
     section("Done")
     bullet("$n_ok/$(length(batch)) gene(s) fully mapped ($(join(effects, ", "))) in $(elapsed_str(batch_t0))")

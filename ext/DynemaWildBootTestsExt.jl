@@ -27,6 +27,11 @@ end
 # getci/getplot/getdist are disabled explicitly: they default to true in
 # WildBootTests and trigger a full confidence-curve grid search per call
 # whose output Dynema never reads.
+# `small = true` makes WildBootTests apply its small-sample correction
+# (clusteradj G/(G-1) on the cluster-robust denominator, the `smallsample`
+# rescaling, and t(G-1)/F(q, G-1) reference distributions; statistic type
+# "t"/"F" instead of "z"/"χ²"). Dynema's `crvetest_direct` replicates this
+# exactly (see `smallsample_factors`), and checks itself against this method.
 function Dynema.crvetest(R::AbstractMatrix, r::AbstractVector;
                     resp::AbstractVector, scores::AbstractMatrix, betas::AbstractVector,
                     A::AbstractMatrix, clustid::AbstractMatrix, small::Bool = false)
@@ -78,6 +83,10 @@ function Dynema.scorebootstrap(R::AbstractMatrix, r::AbstractVector;
             # distribution each round (which was quadratic in rounds).
             statistic = teststat(test)
             stattype = test.stattype
+            # Residual df of the t/F reference (G - 1 when `small`; 0 otherwise),
+            # used only to map statistics to nominal p-values in the beta
+            # approximation below.
+            dofr = Float64(WildBootTests.dof_r(test))
             dists = [dist(test)[1, :]]
             c1, c2 = pass_counts(statistic, dists[1], stattype)
             total = length(dists[1])
@@ -98,7 +107,13 @@ function Dynema.scorebootstrap(R::AbstractMatrix, r::AbstractVector;
                                 ml = true,
                                 scorebs = true,
                                 imposenull = true,
-                                small = false,
+                                # Must match the first round: `statistic` above
+                                # was scaled by the small-sample multiplier, so
+                                # every round's bootstrap distribution has to be
+                                # scaled identically (a mismatch would compare
+                                # the observed statistic against a differently
+                                # scaled null).
+                                small = small,
                                 getci = false, getplot = false, getdist = true,
                                 rng = rng, ptype = ptype,
                                 reps = B[j])
@@ -126,7 +141,7 @@ function Dynema.scorebootstrap(R::AbstractMatrix, r::AbstractVector;
             # FastQTL-style beta approximation over the bootstrap
             # distribution: smooth, and not capped at the empirical
             # resolution floor of ~1/B (see beta_approx_pvalue).
-            pbeta = beta_approx_pvalue(statistic, bootdist, stattype, size(R, 1))
+            pbeta = beta_approx_pvalue(statistic, bootdist, stattype, size(R, 1); dof_r = dofr)
 
             return (pval, pbeta, bootdist)
 

@@ -137,7 +137,21 @@ Arguments:
 - `--meta`: plain text file with cell id, donor id, cell-state contexts, and any donor or 
   single-cell covariates, one row per cell.
 - `covariates`: list of covariates. Must be comma-separated and should match column names in 
-  metadata file.
+  metadata file. Covariate and context column names must not coincide with
+  columns Dynema writes to the output (`variant`, `chr`, `pos`, `z`, `t`,
+  `χ²`, `F`, `p`, `p_boot`, `p_boot_approx`, `p_<context>`, or
+  `se_wald_<term>` of another term); Dynema stops with a message naming the
+  offending column(s) -- rename them in the metadata file.
+- `--scale-covariates` (default true): standardize every numeric covariate and
+  context column to mean 0 and variance 1 (over the cells in `--meta`) before
+  fitting. Genotype dosages and expression counts are never scaled; categorical
+  (e.g. sex), boolean and constant columns are left as given and listed in the
+  log. Two consequences worth knowing: centering the contexts makes the
+  genotype main effect `G` the effect at the *average* cell state rather than
+  at context = 0, and scaling puts every `G & <context>` coefficient on a
+  per-standard-deviation scale, so interaction effect sizes are directly
+  comparable across contexts. Pass `--scale-covariates false` to use the
+  metadata columns exactly as supplied (e.g. if you have already scaled them).
 - `donor-col`: Column name in metadata file including the donor ids. This must match the VCF donor ids too.
 - `cell-col`: Column name in metadata file including the cell ids/barcodes. This must match the barcodes 
   provided in the expression data.
@@ -172,7 +186,24 @@ Arguments:
   coefficients) attached as extra output columns -- the test itself never
   needs them. `lead` (the default) fits only the lead variant(s) (smallest
   p-value, including exact ties; other rows are left empty), `all` fits every
-  variant (substantially slower), `none` skips them.
+  variant (substantially slower), `none` skips them. The genotype estimate
+  columns (`G`, `G & <context>`) come with `se_wald_<term>` columns holding
+  their cluster-robust (CRVE) standard error at the unrestricted fit
+  (covariate coefficients are written without SEs). Rule of thumb: `z`/`χ²` and `p` (score
+  test) are for *inference*; the estimates and their `se_wald_*` (Wald-type,
+  at β̂) are for *describing the effect size* -- do not derive a second
+  p-value from the Wald ratio. See
+  [the output columns in the quick start (Step 6)](quick_start.md) for
+  details.
+- `--small`: apply a small-sample correction to **all** analytical and
+  bootstrap results (default: off): the donor-clustered variance is inflated
+  by *G*/(*G* − 1), and *p*-values use Student's *t* with *G* − 1 df for
+  single-term tests (output column `t` instead of `z`) or an F distribution
+  with (*q*, *G* − 1) df for joint tests (`F` instead of `χ²`). Bootstrap
+  statistics and all reported standard errors use the same correction.
+  Recommended for cohorts with few donors; mirrors WildBootTests.jl's
+  `small = true`. See
+  [Small-sample correction](quick_start.md#Small-sample-correction-(--small)).
 - `--boot`: also compute bootstrap p-values via adaptive score bootstrapping
   (recommended for small or imbalanced cohorts). Adds `p_boot` (empirical,
   floored at ~2/B) and `p_boot_approx` (a FastQTL-style beta approximation of

@@ -17,8 +17,18 @@ by multi-context interaction tests (the `p_<context>` columns; see
 `map_locus`'s `percontext` keyword):
 
 ```@docs
+Dynema.smallsample_factors
 Dynema.crvetest_direct
 Dynema.crve_percomponent
+```
+
+The cluster-robust standard errors of the unrestricted coefficients (the
+`se_wald_<term>` columns that accompany the effect-size estimates; see `map_locus`'s
+`betas` keyword). These are Wald-type SEs at the unrestricted fit, distinct
+from the null-fit score test above:
+
+```@docs
+Dynema.crve_se
 ```
 
 !!! note
